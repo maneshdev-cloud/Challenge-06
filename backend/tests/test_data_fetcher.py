@@ -91,3 +91,82 @@ def test_reverse_geocode_offline_fallback_honest_label() -> None:
     assert res["area_name"].startswith("Near ")
     assert is_coastal_location(19.0760, 72.8777, city_key="mumbai") is True
     assert is_coastal_location(28.6139, 77.2090, city_key="delhi") is False
+
+
+def test_multiday_fallback_slots_not_double_counted() -> None:
+    """Day-1 hours must not be counted twice when summing multiday fallback_slots."""
+    clear_cache()
+
+    def _multiday_handler(request: httpx.Request) -> httpx.Response:
+        times = [
+            f"2026-11-{25 + h // 24:02d}T{h % 24:02d}:00"
+            for h in range(120)
+        ]
+        if "air-quality" in str(request.url):
+            pm25: list[float | None] = [75.0] * 120
+            pm25[30] = None  # Exactly one missing slot on Day 2 (idx >= 24)
+            return httpx.Response(
+                200,
+                json={
+                    "hourly": {
+                        "time": times,
+                        "pm2_5": pm25,
+                        "pm10": [110.0] * 120,
+                        "nitrogen_dioxide": [35.0] * 120,
+                        "us_aqi": [155] * 120,
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": times,
+                    "temperature_2m": [21.0] * 120,
+                    "relative_humidity_2m": [55.0] * 120,
+                    "wind_speed_10m": [5.0] * 120,
+                    "boundary_layer_height": [400.0] * 120,
+                }
+            },
+            request=request,
+        )
+
+    async def _run() -> dict:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_multiday_handler)) as client:
+            return await fetch_city_atmospheric_data("delhi", http_client=client)
+
+    payload = asyncio.run(_run())
+    prov = payload["provenance"]
+    assert prov["is_partial_fallback"] is True
+    assert prov["fallback_slots"] == 1
+
+
+def test_partial_fallback_disclosure_required_and_templated() -> None:
+    """Validator must enforce partial-fallback disclosure and deterministic plan must satisfy it."""
+    import explainer
+    from data_fetcher import PRESETS, _build_replay_payload
+    from engine import build_evidence_bundle
+    from safety import validate_narrative
+    from schemas import PlanRequest
+
+    raw = _build_replay_payload("delhi", "partial", is_fallback_replay=False)
+    raw["provenance"]["is_stale"] = False
+    raw["provenance"]["is_fallback_replay"] = False
+    raw["provenance"]["is_partial_fallback"] = True
+    raw["provenance"]["fallback_slots"] = 3
+    raw["provenance"]["data_type"] = "partial_model_forecast"
+
+    preset = next(p for p in PRESETS if p["id"] == "delhi_family")
+    bundle = build_evidence_bundle(PlanRequest(**preset), raw, current_hour=9)
+
+    ok_missing, reasons = validate_narrative(
+        f"In Delhi, PM2.5 is {bundle.air_snapshot.current_pm25} ug/m3.", bundle
+    )
+    assert ok_missing is False
+    assert any("partial" in r.lower() for r in reasons)
+
+    text, source, ok = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=True))
+    assert source == "deterministic_template"
+    assert ok is True
+    assert "partial" in text.lower() or "fallback" in text.lower()

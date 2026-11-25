@@ -263,6 +263,17 @@ class WindowVentilationAdvice(BaseModel):
     guidance: str
 
 
+class IAQHack(BaseModel):
+    """Budget-tiered indoor air quality action item."""
+
+    id: str
+    tier: str
+    max_cost_inr: int
+    title: str
+    action: str
+    impact_note: str
+
+
 class SanctuaryPlan(BaseModel):
     """Complete indoor air quality and sanctuary room recommendation."""
 
@@ -271,7 +282,7 @@ class SanctuaryPlan(BaseModel):
     window_advice: WindowVentilationAdvice
     co2_safety_note: str
     no_houseplants_note: str
-    applicable_hacks: list[dict[str, object]]
+    applicable_hacks: list[IAQHack]
     personalized_alerts: list[str]
 
 
@@ -300,6 +311,7 @@ class EmitLessLedger(BaseModel):
     co2_saved_g: float
     co2_saved_kg: float
     tailpipe_pm25_saved_mg: float
+    phone_charges_saved: int = 0
     label: str = "Modeled Estimate"
     formula_summary: str
     substitutions: list[str]
@@ -366,18 +378,20 @@ class PlanResponse(BaseModel):
     """Top-level response for POST /v1/plan."""
 
     evidence_bundle: EvidenceBundle
+    evidence_signature: str = ""
     narrative: str
     narrative_source: Literal["gemini", "deterministic_template", "emergency_triage"]
     validator_passed: bool
 
 
 class ChatRequest(BaseModel):
-    """Grounded multilingual Q&A request tied to an EvidenceBundle."""
+    """Grounded multilingual Q&A request tied to a signed EvidenceBundle."""
 
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(..., min_length=1, max_length=1500)
     evidence_bundle: EvidenceBundle
+    evidence_signature: str = Field(default="", max_length=128)
     language: LanguageCode = "en"
 
 

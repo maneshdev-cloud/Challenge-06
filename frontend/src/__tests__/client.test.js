@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { auditRoomPhoto, generatePlan } from "../api/client";
+import { auditRoomPhoto, generatePlan, sendChatQuestion } from "../api/client";
 
 describe("API client resilience", () => {
   afterEach(() => {
@@ -50,5 +50,31 @@ describe("API client resilience", () => {
       generatePlan({ city: "delhi" }, { signal: controller.signal })
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sendChatQuestion forwards evidence_signature in POST /v1/chat body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        reply: "Walk at 2 PM.",
+        emergency_alert: false,
+        emergency_message: null,
+        source: "deterministic_template",
+        validator_passed: true
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatQuestion("Can I walk?", { app_name: "PRANA-AI" }, "en", "sig-abc-123");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/v1\/chat$/);
+    expect(JSON.parse(init.body)).toEqual({
+      message: "Can I walk?",
+      evidence_bundle: { app_name: "PRANA-AI" },
+      evidence_signature: "sig-abc-123",
+      language: "en"
+    });
   });
 });

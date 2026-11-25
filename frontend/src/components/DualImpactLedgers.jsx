@@ -30,7 +30,8 @@ export default function DualImpactLedgers({
   const sliderHour = walkOverrideHour ?? goldenStartHour ?? 14;
   const isPositiveDose = breatheLess.dose_avoided_ug >= 0;
   const lowSmogCigs = breatheLess.cigarettes_avoided >= 0 && breatheLess.cigarettes_avoided < 0.2;
-  const phoneCharges = Math.round(Math.max(0, emitLess.co2_saved_g) / 8.2);
+  const phoneCharges =
+    emitLess.phone_charges_saved ?? Math.round(Math.max(0, emitLess.co2_saved_g) / 8.2);
 
   return (
     <section className="rounded-3xl bg-white p-5 shadow-md shadow-slate-200/60 ring-1 ring-slate-200/70 sm:p-6">
@@ -70,9 +71,8 @@ export default function DualImpactLedgers({
 
           <div className="mt-3.5">
             <p
-              className={`text-2xl font-extrabold tracking-tight sm:text-3xl ${
-                isPositiveDose ? "text-teal-800" : "text-rose-700"
-              }`}
+              className={`text-2xl font-extrabold tracking-tight sm:text-3xl ${isPositiveDose ? "text-teal-800" : "text-rose-700"
+                }`}
             >
               {isPositiveDose
                 ? `${breatheLess.reduction_pct}% less pollution breathed`

@@ -16,7 +16,13 @@ from google import genai
 from google.genai import types
 
 from data_fetcher import CONSTANTS
-from safety import EMERGENCY_DIRECTIVE, check_medical_emergency, validate_narrative
+from safety import (
+    EMERGENCY_DIRECTIVE,
+    PARTIAL_DISCLOSURE_TOKENS,
+    STALE_DISCLOSURE_TOKENS,
+    check_medical_emergency,
+    validate_narrative,
+)
 from schemas import EvidenceBundle, LanguageCode, RoomAuditResponse, RoomAuditTip
 
 load_dotenv()
@@ -86,10 +92,13 @@ def reset_failover_cache() -> None:
 
 
 def _get_client(api_key: str) -> genai.Client:
-    """Reuse google-genai Client per API key for connection-pool keep-alive speed."""
+    """Reuse google-genai Client per API key with a bounded >=10s SDK HTTP timeout."""
     client = _CLIENT_CACHE.get(api_key)
     if client is None:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=10_000),
+        )
         _CLIENT_CACHE[api_key] = client
     return client
 
@@ -245,11 +254,16 @@ def build_deterministic_plan_narrative(bundle: EvidenceBundle) -> str:
     sp = bundle.sanctuary_plan
     loc_label = f"{air.city_name} ({air.area_name})" if air.area_name else air.city_name
     is_replay = bundle.provenance.is_stale or bundle.provenance.is_fallback_replay
+    is_partial = bundle.provenance.is_partial_fallback and not is_replay
 
     templates = CONSTANTS.get("deterministic_plan_templates", {})
     tpl = templates.get(bundle.language)
     if tpl:
-        stale_prefix = str(tpl["stale_prefix"]) if is_replay else ""
+        stale_prefix = (
+            str(tpl["stale_prefix"])
+            if is_replay
+            else (str(tpl.get("partial_prefix", "")) if is_partial else "")
+        )
         ctx = {
             "loc_label": loc_label,
             "current_pm25": air.current_pm25,
@@ -266,6 +280,11 @@ def build_deterministic_plan_narrative(bundle: EvidenceBundle) -> str:
         }
         use_window = gw.is_clean_air_day or gw.has_meaningful_window
         line_key = "air_line_window" if use_window else "air_line_flat"
+        co2_key = "co2_bullet_nonzero" if el.co2_saved_g > 0 else "co2_bullet_same_mode"
+        do_items = [
+            *[str(b).format(**ctx) for b in tpl["do_bullets_base"]],
+            str(tpl[co2_key]).format(**ctx),
+        ]
         headings = (
             str(tpl["air_heading"]),
             str(tpl["do_heading"]),
@@ -273,7 +292,7 @@ def build_deterministic_plan_narrative(bundle: EvidenceBundle) -> str:
         )
         return format_do_avoid_response(
             air_line=str(tpl[line_key]).format(**ctx),
-            do_items=[str(b).format(**ctx) for b in tpl["do_bullets"]],
+            do_items=do_items,
             avoid_items=[str(b).format(**ctx) for b in tpl["avoid_bullets"]],
             headings=headings,
             stale_prefix=stale_prefix,
@@ -282,7 +301,12 @@ def build_deterministic_plan_narrative(bundle: EvidenceBundle) -> str:
     stale_en = (
         f"Note: Live data unavailable; showing historical replay ({bundle.provenance.source}).\n\n"
         if is_replay
-        else ""
+        else (
+            f"Note: Partial fallback active — some forecast slots use offline baseline "
+            f"({bundle.provenance.source}).\n\n"
+            if is_partial
+            else ""
+        )
     )
     air_line, do_items, avoid_items = _build_english_plan_content(bundle)
     return format_do_avoid_response(air_line, do_items, avoid_items, stale_prefix=stale_en)
@@ -451,11 +475,57 @@ def build_deterministic_chat_reply(
 
 
 def _serialize_evidence_for_llm(bundle: EvidenceBundle) -> str:
-    """Serialize clean air/schedule data without validator allowlists or noisy hourly arrays."""
-    data = bundle.model_dump(
-        exclude={"grounded_numbers": True, "grounded_metrics": True, "air_snapshot": {"hourly"}}
-    )
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    """Serialize compact air, schedule, and ledger facts without noisy hourly arrays."""
+    compact = {
+        "app_name": bundle.app_name,
+        "city": bundle.city,
+        "city_name": bundle.city_name,
+        "area_name": bundle.area_name,
+        "language": bundle.language,
+        "budget_tier": bundle.budget_tier,
+        "provenance": bundle.provenance.model_dump(mode="json"),
+        "air_snapshot": bundle.air_snapshot.model_dump(
+            mode="json",
+            exclude={"hourly": True},
+        ),
+        "routine_plan": [
+            item.model_dump(
+                mode="json",
+                include={
+                    "name",
+                    "member_name",
+                    "flexibility",
+                    "badge",
+                    "original_hour",
+                    "recommended_hour",
+                    "duration_min",
+                    "original_pm25",
+                    "recommended_pm25",
+                    "original_naqi",
+                    "recommended_naqi",
+                    "recommended_mask",
+                    "dose_avoided_ug",
+                },
+            )
+            for item in bundle.routine_plan
+        ],
+        "sanctuary_plan": bundle.sanctuary_plan.model_dump(
+            mode="json",
+            exclude={"applicable_hacks": True},
+        ),
+        "breathe_less": bundle.breathe_less.model_dump(
+            mode="json",
+            exclude={"substitutions": True, "limitations": True},
+        ),
+        "emit_less": bundle.emit_less.model_dump(
+            mode="json",
+            exclude={"substitutions": True, "limitations": True},
+        ),
+        "profile_summary": (
+            bundle.profile_summary.model_dump(mode="json") if bundle.profile_summary else None
+        ),
+    }
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
 
 def _call_gemini_sync(prompt: str, model_name: str, api_key: str) -> str:
@@ -526,11 +596,7 @@ async def _run_gemini_with_failover(
                     asyncio.to_thread(invoke_sync, model_name, api_key),
                     timeout=call_timeout,
                 )
-                parsed = postprocess(raw_text, model_name)
-                if parsed is not None:
-                    return parsed, model_name
-                logger.warning("Gemini output rejected by validator for model %s.", model_name)
-            except (TimeoutError, RuntimeError, OSError, ValueError, Exception) as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 kind = _classify_gemini_error(exc)
                 ts_now = time.monotonic()
                 logger.warning(
@@ -547,6 +613,12 @@ async def _run_gemini_with_failover(
                     _MODEL_UNAVAILABLE_UNTIL[(api_key, model_name)] = (
                         ts_now + MODEL_404_TTL_SECONDS
                     )
+                continue
+
+            parsed = postprocess(raw_text, model_name)
+            if parsed is not None:
+                return parsed, model_name
+            logger.warning("Gemini output rejected by validator for model %s.", model_name)
     return None, None
 
 
@@ -554,13 +626,16 @@ async def _try_gemini_with_validation(prompt: str, bundle: EvidenceBundle) -> st
     """Run grounded text prompt with failover and numeric safety validation."""
 
     def _validate(raw_text: str, _model: str) -> str | None:
-        """Accept raw Gemini text only if stale provenance and numeric checks pass."""
+        """Accept raw Gemini text only if provenance disclosure and numeric checks pass."""
         text = raw_text
-        stale_tokens = ("replay", "stale", "offline", "unavailable", "historical")
         if (bundle.provenance.is_stale or bundle.provenance.is_fallback_replay) and not any(
-            tok in text.lower() for tok in stale_tokens
+            tok in text.lower() for tok in STALE_DISCLOSURE_TOKENS
         ):
             text = f"Historical replay note (live data unavailable): {text}"
+        elif bundle.provenance.is_partial_fallback and not any(
+            tok in text.lower() for tok in PARTIAL_DISCLOSURE_TOKENS
+        ):
+            text = f"Partial forecast fallback note (backup slots used): {text}"
         ok, _ = validate_narrative(text, bundle)
         return text if ok else None
 
@@ -577,7 +652,7 @@ def build_deterministic_room_audit(
     area_name: str | None = None,
     current_naqi: int | None = None,
 ) -> RoomAuditResponse:
-    """Fast Rs 0-500 deterministic IAQ room audit fallback tailored to Indian homes."""
+    """Fast Rs 0-500 deterministic IAQ room audit fallback localized to 8 languages."""
     loc = f"{area_name}, {city}" if area_name and area_name.lower() != city.lower() else city
     aqi_note = f" (Estimated India AQI {current_naqi})" if current_naqi is not None else ""
 
@@ -615,35 +690,9 @@ def build_deterministic_room_audit(
         f"Low-cost sealing, cooking-smoke isolation, and wet-cleaning audit for {loc}{aqi_note}.",
     )
 
-    tips = [
-        RoomAuditTip(
-            title="Seal Door & Window Gaps",
-            cost_inr="Rs. 150",
-            action=(
-                "Roll a spare damp towel under the corridor/road-side door tonight, and apply "
-                "self-adhesive EPDM foam tape (Rs. 120-200) along loose sliding window tracks."
-            ),
-            why_it_helps="Stops smoky traffic air from creeping through unsealed perimeter cracks.",
-        ),
-        RoomAuditTip(
-            title="Isolate Kitchen Tadka Plumes",
-            cost_inr="Rs. 0",
-            action=(
-                "Shut the kitchen door before frying/tadka and run the exhaust fan (or open the "
-                "nearest kitchen vent) for 15 minutes afterward."
-            ),
-            why_it_helps="Prevents short cooking PM2.5 spikes (>300 ug/m3) from entering bedrooms.",
-        ),
-        RoomAuditTip(
-            title="Switch Dust Traps to Wet Cleaning",
-            cost_inr="Rs. 50",
-            action=(
-                "Wash heavy road-facing curtains monthly, wipe sills/fan blades with a damp cloth, "
-                "and wet-mop (pochha) instead of dry broom sweeping."
-            ),
-            why_it_helps="Prevents settled dust from resuspending back into breathing height.",
-        ),
-    ]
+    tips_table = CONSTANTS.get("room_audit_fallback_tips", {})
+    raw_tips = tips_table.get(language) or tips_table.get("en", [])
+    tips = [RoomAuditTip(**item) for item in raw_tips[:3]]
 
     return RoomAuditResponse(
         city=city,
@@ -688,7 +737,10 @@ def _parse_room_audit_json(
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
-        cost = str(item.get("cost_inr") or "Rs. 0").strip()
+        cost = str(item.get("cost_inr") or "").strip()
+        cost_match = re.search(r"\d+", cost.replace(",", ""))
+        if not cost_match or not 0 <= int(cost_match.group(0)) <= 500:
+            continue
         action = str(item.get("action") or "").strip()
         why = str(item.get("why_it_helps") or "").strip()
         combined = f"{title} {action} {why}".lower()

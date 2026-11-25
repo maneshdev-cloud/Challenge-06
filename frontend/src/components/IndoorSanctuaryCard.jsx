@@ -111,9 +111,8 @@ export default function IndoorSanctuaryCard({
                   className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200"
                 >
                   <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      rm.is_sanctuary ? "bg-teal-600" : "bg-slate-500"
-                    }`}
+                    className={`h-full rounded-full transition-all duration-300 ${rm.is_sanctuary ? "bg-teal-600" : "bg-slate-500"
+                      }`}
                     style={{ width: `${Math.max(10, Math.min(100, rm.score))}%` }}
                   />
                 </div>
@@ -132,7 +131,7 @@ export default function IndoorSanctuaryCard({
                 {wa.action === "timed_open"
                   ? `Open Windows (${formatHourAmPm(wa.open_window_start_hour)} – ${formatHourAmPm(
                       wa.open_window_end_hour
-                    )})`
+                    )} • ${wa.duration_minutes ?? 20} Min)`
                   : "Keep Street Windows Shut + Exhaust Kitchen Smoke"}
               </span>
             </div>
@@ -172,11 +171,10 @@ export default function IndoorSanctuaryCard({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-slate-900">{hack.title}</span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                      hack.max_cost_inr === 0
-                        ? "bg-emerald-100 text-emerald-900"
-                        : "bg-sky-100 text-sky-900"
-                    }`}
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${hack.max_cost_inr === 0
+                      ? "bg-emerald-100 text-emerald-900"
+                      : "bg-sky-100 text-sky-900"
+                      }`}
                   >
                     {hack.tier}
                   </span>
@@ -224,9 +222,8 @@ export default function IndoorSanctuaryCard({
             </p>
           </div>
           <span
-            className={`rounded-full px-3 py-1 text-[11px] font-bold ${
-              highSmog ? "bg-rose-100 text-rose-900" : "bg-teal-100 text-teal-900"
-            }`}
+            className={`rounded-full px-3 py-1 text-[11px] font-bold ${highSmog ? "bg-rose-100 text-rose-900" : "bg-teal-100 text-teal-900"
+              }`}
           >
             {highSmog ? "Low-Intensity Recommended" : "Light Indoor Wellness"}
           </span>
@@ -236,15 +233,13 @@ export default function IndoorSanctuaryCard({
           {wellnessTips.map(({ title, detail, Icon, highlight }) => (
             <div
               key={title}
-              className={`rounded-2xl p-3.5 ring-1 transition ${
-                highlight ? "bg-rose-50/80 ring-rose-200" : "bg-white/90 ring-slate-200/70"
-              }`}
+              className={`rounded-2xl p-3.5 ring-1 transition ${highlight ? "bg-rose-50/80 ring-rose-200" : "bg-white/90 ring-slate-200/70"
+                }`}
             >
               <div className="flex items-center gap-2">
                 <div
-                  className={`flex h-7 w-7 items-center justify-center rounded-lg ${
-                    highlight ? "bg-rose-100 text-rose-700" : "bg-teal-50 text-teal-700"
-                  }`}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg ${highlight ? "bg-rose-100 text-rose-700" : "bg-teal-50 text-teal-700"
+                    }`}
                 >
                   <Icon className="h-4 w-4" aria-hidden="true" />
                 </div>

@@ -86,7 +86,8 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
 
   const co2Headline =
     el.co2_saved_g >= 1000 ? `${el.co2_saved_kg} kg CO2 saved` : `${el.co2_saved_g} g CO2 saved`;
-  const phoneCharges = Math.round(Math.max(0, el.co2_saved_g) / 8.2);
+  const phoneCharges =
+    el.phone_charges_saved ?? Math.round(Math.max(0, el.co2_saved_g) / 8.2);
 
   return (
     <section
@@ -107,11 +108,10 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
         <div className="flex flex-wrap items-center gap-2">
           {prof && (
             <span
-              className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold ${
-                prof.warning_active
-                  ? "bg-amber-300 text-slate-950 shadow-sm"
-                  : "bg-white/20 text-white ring-1 ring-white/30"
-              }`}
+              className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold ${prof.warning_active
+                ? "bg-amber-300 text-slate-950 shadow-sm"
+                : "bg-white/20 text-white ring-1 ring-white/30"
+                }`}
             >
               {prof.warning_active && <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />}
               {prof.risk_badge}
@@ -155,11 +155,10 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
 
       {prof && (
         <div
-          className={`mt-4 rounded-2xl px-4 py-3 backdrop-blur-sm ring-1 ${
-            prof.warning_active
-              ? "bg-amber-950/45 ring-amber-200/50"
-              : "bg-black/25 ring-white/15"
-          }`}
+          className={`mt-4 rounded-2xl px-4 py-3 backdrop-blur-sm ring-1 ${prof.warning_active
+            ? "bg-amber-950/45 ring-amber-200/50"
+            : "bg-black/25 ring-white/15"
+            }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex flex-wrap items-center gap-2">

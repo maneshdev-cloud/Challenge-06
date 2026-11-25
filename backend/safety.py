@@ -1,10 +1,19 @@
-"""Hard medical emergency triage and metric-aware post-generation validator."""
+"""Hard medical emergency triage, bundle HMAC integrity, and category-bound validator."""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
 import re
+import secrets
 
+from data_fetcher import CONSTANTS
 from schemas import EvidenceBundle
+
+PLACEHOLDER_KEY = "your_google_ai_studio_key_here"
+_EPHEMERAL_SECRET = secrets.token_bytes(32)
 
 EMERGENCY_KEYWORDS = (
     "wheezing",
@@ -78,10 +87,74 @@ STALE_DISCLOSURE_TOKENS = (
     "கிடைக்கவில்லை", "வரலாற்று", "అందుబాటులో లేదు", "చారిత్రక",
 )
 
+PARTIAL_DISCLOSURE_TOKENS = (
+    "partial", "fallback", "backup", "missing", "बैकअप", "आंशिक",
+    "बॅकअप", "ಬ್ಯಾಕಪ್", "ব্যাকআপ", "மாற்று", "బ్యాకప్",
+) + STALE_DISCLOSURE_TOKENS
+
+_DOCUMENTED_PCT_ALLOWLIST: list[float] = sorted({
+    float(CONSTANTS["engine_params"]["golden_window_min_reduction_pct"]),
+    *[
+        round(float(v) * 100.0, 1)
+        for v in CONSTANTS["mask_filtration_efficiency"].values()
+        if v > 0
+    ],
+    44.0,
+    65.0,
+    70.0,
+    95.0,
+})
+
+
+def _get_bundle_hmac_key() -> bytes:
+    """Resolve HMAC key from PRANA_BUNDLE_SECRET, environment seed, or ephemeral secret."""
+    explicit = os.getenv("PRANA_BUNDLE_SECRET", "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    seed_parts = [
+        val.strip()
+        for val in (
+            os.getenv("GEMINI_API_KEY", ""),
+            os.getenv("VERCEL_PROJECT_ID", ""),
+            os.getenv("VERCEL_ENV", ""),
+        )
+        if val.strip() and PLACEHOLDER_KEY not in val
+    ]
+    if seed_parts:
+        raw_seed = f"prana-ai-bundle-hmac-v1:{'|'.join(seed_parts)}"
+        return hashlib.sha256(raw_seed.encode("utf-8")).digest()
+    return _EPHEMERAL_SECRET
+
+
+def _canonical_bundle_bytes(bundle: EvidenceBundle) -> bytes:
+    """Serialize an EvidenceBundle canonically for deterministic HMAC verification."""
+    payload = json.dumps(
+        bundle.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return payload.encode("utf-8")
+
+
+def sign_evidence_bundle(bundle: EvidenceBundle) -> str:
+    """Create an HMAC-SHA256 signature authenticating server-computed EvidenceBundle fields."""
+    return hmac.new(
+        _get_bundle_hmac_key(), _canonical_bundle_bytes(bundle), hashlib.sha256
+    ).hexdigest()
+
+
+def verify_evidence_bundle(bundle: EvidenceBundle, signature: str | None) -> bool:
+    """Verify submitted EvidenceBundle HMAC-SHA256 signature in constant time."""
+    if not signature or not isinstance(signature, str):
+        return False
+    expected = sign_evidence_bundle(bundle)
+    return hmac.compare_digest(expected, signature.strip().lower())
+
 
 def _normalize_apostrophes(text: str) -> str:
-    """Normalize curly/smart quotes and collapse extra whitespace for keyword triage."""
-    return text.replace("\u2019", "'").replace("\u2018", "'").replace("\u02bc", "'")
+    """Normalize curly/smart quotes for reliable emergency keyword matching."""
+    return text.replace("\u2019", "'").replace("\u02bc", "'").replace("\u2018", "'")
 
 
 def check_medical_emergency(text: str | None) -> tuple[bool, str | None]:
@@ -112,27 +185,30 @@ def _allowed_pool_for_unit(unit: str, bundle: EvidenceBundle) -> list[float]:
     if not has_typed:
         return bundle.grounded_numbers
 
-    if u in {"ug/m3", "µg/m3"}:
-        return gm.pm25
-    if u in {"ug", "µg"}:
-        return gm.dose_ug + [float(x) for x in bundle.grounded_numbers if x == 330.0]
-    if u in {"naqi", "aqi"}:
-        return gm.naqi
-    if u.startswith("g "):
-        return gm.co2_g
-    if u.startswith("kg "):
-        return gm.co2_kg
-    if u.startswith("mg "):
-        return gm.tailpipe_mg
-    if u.startswith("cig"):
-        return gm.cigarettes
-    if u == "%":
-        return gm.pct + [15.0, 20.0, 35.0, 44.0, 65.0, 70.0, 80.0]
-    return bundle.grounded_numbers
+    dose_pool = gm.dose_ug + [float(x) for x in bundle.grounded_numbers if x == 330.0]
+    unit_map: dict[str, list[float]] = {
+        "ug/m3": gm.pm25,
+        "µg/m3": gm.pm25,
+        "ug": dose_pool,
+        "µg": dose_pool,
+        "naqi": gm.naqi,
+        "aqi": gm.naqi,
+        "%": gm.pct + _DOCUMENTED_PCT_ALLOWLIST,
+    }
+    pool = unit_map.get(u)
+    if pool is None:
+        prefix_map = (
+            ("g ", gm.co2_g),
+            ("kg ", gm.co2_kg),
+            ("mg ", gm.tailpipe_mg),
+            ("cig", gm.cigarettes),
+        )
+        pool = next((vals for prefix, vals in prefix_map if u.startswith(prefix)), None)
+    return pool if pool is not None else bundle.grounded_numbers
 
 
 def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[str]]:
-    """Validate GenAI narrative for banned claims and category-bound metric numbers."""
+    """Validate GenAI narrative for banned claims, provenance honesty, and metric numbers."""
     if not text or not text.strip():
         return False, ["Empty narrative output"]
 
@@ -162,9 +238,13 @@ def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[st
         if not _is_number_grounded(val, naqi_pool):
             reasons.append(f"Ungrounded AQI value '{match.group(0)}' not found in NAQI pool.")
 
+    low = text.lower()
     if bundle.provenance.is_stale or bundle.provenance.is_fallback_replay:
-        low = text.lower()
         if not any(tok in low for tok in STALE_DISCLOSURE_TOKENS):
             reasons.append("Stale/replay provenance was not disclosed in narrative.")
+    elif bundle.provenance.is_partial_fallback and not any(
+        tok in low for tok in PARTIAL_DISCLOSURE_TOKENS
+    ):
+        reasons.append("Partial fallback provenance was not disclosed in narrative.")
 
     return len(reasons) == 0, reasons

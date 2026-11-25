@@ -103,12 +103,19 @@ export function generatePlan(planRequest, options = {}) {
   });
 }
 
-export function sendChatQuestion(message, evidenceBundle, language, options = {}) {
+export function sendChatQuestion(
+  message,
+  evidenceBundle,
+  language,
+  evidenceSignature = "",
+  options = {}
+) {
   return requestJson("/v1/chat", {
     method: "POST",
     body: JSON.stringify({
       message,
       evidence_bundle: evidenceBundle,
+      evidence_signature: evidenceSignature || "",
       language
     }),
     ...options

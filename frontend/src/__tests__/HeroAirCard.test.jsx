@@ -31,7 +31,8 @@ const SAMPLE_BUNDLE = {
   emit_less: {
     co2_saved_g: 2100,
     co2_saved_kg: 2.1,
-    tailpipe_pm25_saved_mg: 88
+    tailpipe_pm25_saved_mg: 88,
+    phone_charges_saved: 256
   },
   provenance: {
     is_fallback_replay: true
@@ -62,6 +63,7 @@ describe("HeroAirCard", () => {
     expect(screen.getByText("Est. India AQI")).toBeInTheDocument();
     expect(screen.getByText("142")).toBeInTheDocument();
     expect(screen.getByText(/Senior Precaution Triggered/)).toBeInTheDocument();
+    expect(screen.getByText(/~256 phone charges/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /50% less pollution breathed/i }));
     expect(onJumpToImpact).toHaveBeenCalledTimes(1);

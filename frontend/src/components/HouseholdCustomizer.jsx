@@ -333,11 +333,10 @@ export default function HouseholdCustomizer({
               >
                 <span className="truncate font-medium text-slate-800">
                   <span
-                    className={`mr-2 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                      a.flexibility === "fixed"
-                        ? "bg-amber-100 text-amber-900"
-                        : "bg-emerald-100 text-emerald-900"
-                    }`}
+                    className={`mr-2 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${a.flexibility === "fixed"
+                      ? "bg-amber-100 text-amber-900"
+                      : "bg-emerald-100 text-emerald-900"
+                      }`}
                   >
                     {a.flexibility}
                   </span>
@@ -370,14 +369,19 @@ export default function HouseholdCustomizer({
           Reset Saved Household
         </button>
 
-        <button
-          type="button"
-          onClick={onClose}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-        >
-          {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-          {saving ? "Recalculating..." : "Save & Close"}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[11px] text-slate-600">
+            Changes apply &amp; save automatically in this browser.
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-bold text-white hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          >
+            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+            {saving ? "Recalculating..." : "Done"}
+          </button>
+        </div>
       </div>
     </Modal>
   );

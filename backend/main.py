@@ -30,7 +30,7 @@ from explainer import (
     generate_chat_reply,
     generate_plan_narrative,
 )
-from safety import check_medical_emergency
+from safety import check_medical_emergency, sign_evidence_bundle, verify_evidence_bundle
 from schemas import (
     AirSnapshotResponse,
     ChatRequest,
@@ -80,10 +80,10 @@ app.add_middleware(
 )
 
 
-class SecurityHeadersMiddleware:
+class SecurityHeadersMiddleware:  # pylint: disable=too-few-public-methods
     """Attach baseline HTTP security headers on all backend responses."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp) -> None:  # pylint: disable=redefined-outer-name
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -109,10 +109,10 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, _send_with_headers)
 
 
-class StripApiPrefixMiddleware:
+class StripApiPrefixMiddleware:  # pylint: disable=too-few-public-methods
     """Normalize /api/* paths so same-origin Vercel and Vite proxy calls resolve identically."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp) -> None:  # pylint: disable=redefined-outer-name
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -126,12 +126,31 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(StripApiPrefixMiddleware)
 
 
+def _resolve_client_ip(request: Request) -> str:
+    """Resolve client IP respecting proxy X-Forwarded-For while falling back to socket host."""
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        first_hop = forwarded.split(",")[0].strip()
+        if first_hop:
+            return first_hop
+    return request.client.host if request.client else "unknown"
+
+
 def _enforce_rate_limit(request: Request, max_requests: int = RATE_LIMIT_MAX_REQUESTS) -> None:
-    """Enforce a lightweight per-IP sliding window guard on expensive LLM endpoints."""
-    client_host = request.client.host if request.client else "unknown"
+    """Enforce a per-IP sliding window guard on expensive LLM endpoints with bucket pruning."""
+    client_host = _resolve_client_ip(request)
     if client_host == "testclient":
         return
     now = time.monotonic()
+    if len(_RATE_BUCKETS) > 1000:
+        stale_ips = [
+            ip
+            for ip, q in _RATE_BUCKETS.items()
+            if not q or (now - q[-1]) >= RATE_LIMIT_WINDOW_SECONDS
+        ]
+        for ip in stale_ips:
+            del _RATE_BUCKETS[ip]
+
     bucket = _RATE_BUCKETS[client_host]
     while bucket and (now - bucket[0]) >= RATE_LIMIT_WINDOW_SECONDS:
         bucket.popleft()
@@ -237,6 +256,7 @@ async def create_plan(req: PlanRequest, request: Request) -> PlanResponse:
     )
     return PlanResponse(
         evidence_bundle=bundle,
+        evidence_signature=sign_evidence_bundle(bundle),
         narrative=narrative,
         narrative_source=source,
         validator_passed=validator_passed,
@@ -245,7 +265,20 @@ async def create_plan(req: PlanRequest, request: Request) -> PlanResponse:
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat_with_plan(req: ChatRequest, request: Request) -> ChatResponse:
-    """Grounded multilingual Q&A constrained to today's data with bulletproof fallback."""
+    """Grounded multilingual Q&A constrained to HMAC-signed server data with safe fallback."""
+    if not verify_evidence_bundle(req.evidence_bundle, req.evidence_signature):
+        raise HTTPException(status_code=403, detail="Invalid or tampered evidence bundle.")
+
+    is_er, er_directive = check_medical_emergency(req.message)
+    if is_er and er_directive:
+        return ChatResponse(
+            reply=er_directive,
+            emergency_alert=True,
+            emergency_message=er_directive,
+            source="emergency_triage",
+            validator_passed=True,
+        )
+
     _enforce_rate_limit(request)
     try:
         reply, emergency_alert, emergency_msg, source, validator_passed = await generate_chat_reply(
@@ -279,34 +312,46 @@ async def chat_with_plan(req: ChatRequest, request: Request) -> ChatResponse:
 
 
 def _validate_and_optimize_room_image(raw_bytes: bytes) -> tuple[bytes, str]:
-    """Verify JPG/PNG/WebP integrity and pixel bounds via Pillow and optimize oversized uploads."""
+    """Verify JPG/PNG/WebP integrity, bound pixels, strip EXIF tags, and shrink huge files."""
     try:
         with Image.open(io.BytesIO(raw_bytes)) as img:
             fmt = (img.format or "").upper()
-            if fmt not in ALLOWED_IMAGE_FORMATS:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Unsupported image format. Please upload JPG, PNG, or WebP (max 5 MB).",
-                )
-            mime_type = ALLOWED_IMAGE_FORMATS[fmt]
+            width, height = img.size
             img.verify()
-    except HTTPException:
-        raise
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise HTTPException(
             status_code=415,
             detail="Invalid or oversized image dimensions. Upload a valid JPG, PNG, or WebP photo.",
         ) from exc
 
-    if len(raw_bytes) > 1_200_000:
-        with Image.open(io.BytesIO(raw_bytes)) as img:
+    if fmt not in ALLOWED_IMAGE_FORMATS:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported image format. Please upload JPG, PNG, or WebP (max 5 MB).",
+        )
+    if width * height > 25_000_000:
+        raise HTTPException(
+            status_code=415,
+            detail="Image dimensions exceed safe pixel limit. Upload a smaller photo.",
+        )
+    mime_type = ALLOWED_IMAGE_FORMATS[fmt]
+
+    with Image.open(io.BytesIO(raw_bytes)) as img:
+        img.load()
+        out = io.BytesIO()
+        if len(raw_bytes) > 1_200_000 or max(img.size) > 1280:
             rgb = img.convert("RGB")
             rgb.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
-            out = io.BytesIO()
             rgb.save(out, format="JPEG", quality=84, optimize=True)
             return out.getvalue(), "image/jpeg"
 
-    return raw_bytes, mime_type
+        target_mode = "RGBA" if img.mode in {"RGBA", "LA", "P"} and fmt != "JPEG" else "RGB"
+        clean_img = img.convert(target_mode)
+        if fmt == "PNG":
+            clean_img.save(out, format="PNG")
+        else:
+            clean_img.save(out, format=fmt, quality=88)
+        return out.getvalue(), mime_type
 
 
 @app.post("/v1/audit-room", response_model=RoomAuditResponse)

@@ -347,3 +347,167 @@ def test_user_categories_differentiate_lung_capacity_and_advice() -> None:
     assert seniors_b.profile_summary.peak_ventilation_m3_hr == 1.30
     assert rider_b.breathe_less.baseline_dose_ug > kids_b.breathe_less.baseline_dose_ug
     assert rider_b.routine_plan[0].recommended_mask == "n95"
+
+
+def test_evening_spike_clears_clean_air_day_flag() -> None:
+    """An evening pollution spike (NAQI > 100) must mark is_clean_air_day=False."""
+    points = [
+        HourlyAirPoint(
+            hour=h,
+            time_label=f"{h:02d}:00",
+            pm2_5=115.0 if 19 <= h <= 22 else 18.0,
+            pm10=140.0 if 19 <= h <= 22 else 28.0,
+            nitrogen_dioxide=30.0,
+            cpcb_naqi=283 if 19 <= h <= 22 else 30,
+            cpcb_category="Poor" if 19 <= h <= 22 else "Good",
+            dominant_pollutant="PM2.5",
+            pm25_subindex=283 if 19 <= h <= 22 else 30,
+            pm10_subindex=127 if 19 <= h <= 22 else 28,
+            no2_subindex=38,
+            temperature_2m=25.0,
+            relative_humidity_2m=55.0,
+            wind_speed_10m=8.0,
+            boundary_layer_height=450.0,
+        )
+        for h in range(24)
+    ]
+    gw = find_golden_window(points)
+    assert gw.is_clean_air_day is False
+
+
+def test_duration_integrated_optimizer_and_midnight_nowrap() -> None:
+    """Late-night 4h exposure must not wrap onto polluted hour 0, and optimizer respects length."""
+    hourly_vals = [220.0 if h < 3 or 10 <= h <= 14 else 35.0 for h in range(24)]
+    points = [
+        HourlyAirPoint(
+            hour=h,
+            time_label=f"{h:02d}:00",
+            pm2_5=hourly_vals[h],
+            pm10=hourly_vals[h] * 1.4,
+            nitrogen_dioxide=25.0,
+            cpcb_naqi=380 if hourly_vals[h] > 200 else 58,
+            cpcb_category="Very Poor" if hourly_vals[h] > 200 else "Satisfactory",
+            dominant_pollutant="PM2.5",
+            pm25_subindex=380 if hourly_vals[h] > 200 else 58,
+            pm10_subindex=250 if hourly_vals[h] > 200 else 49,
+            no2_subindex=31,
+            temperature_2m=20.0,
+            relative_humidity_2m=55.0,
+            wind_speed_10m=6.0,
+            boundary_layer_height=350.0,
+        )
+        for h in range(24)
+    ]
+
+    dose_no_day2, mean_no_day2, _ = compute_interval_dose_ug(
+        points, 22, 240, "walk_sidewalk", "light_walk", "none"
+    )
+    dose_with_clean_day2, mean_with_day2, _ = compute_interval_dose_ug(
+        points, 22, 240, "walk_sidewalk", "light_walk", "none", next_day_pm25=[20.0] * 24
+    )
+    assert mean_no_day2 == 35.0
+    assert mean_with_day2 < mean_no_day2
+    assert dose_with_clean_day2 < dose_no_day2
+
+    # Build a 24h series where 13:00 is clean (25) but 14:00-15:00 spikes (260),
+    # while 16:00-18:00 stays steadily moderate (60).
+    spike_vals = [180.0] * 24
+    spike_vals[13] = 25.0
+    spike_vals[14] = 260.0
+    spike_vals[15] = 260.0
+    spike_vals[16] = 60.0
+    spike_vals[17] = 60.0
+    spike_vals[18] = 60.0
+    req_long = PlanRequest(
+        city="delhi",
+        budget_tier="rs_0",
+        members=[HouseholdMember(name="Adult", age=32, conditions=["adult"])],
+        activities=[
+            ActivityItem(
+                id="long_walk",
+                name="2.5h Outdoor Task",
+                flexibility="flexible",
+                planned_hour=9,
+                duration_min=150,
+                activity_level="brisk_walk",
+                member_name="Adult",
+            )
+        ],
+    )
+    raw = _build_replay_payload("delhi", "test")
+    raw["hourly_raw"]["pm2_5"] = spike_vals
+    bundle = build_evidence_bundle(req_long, raw, current_hour=9)
+    assert bundle.routine_plan[0].recommended_hour == 16
+
+
+def test_peak_interval_mask_and_emit_less_phone_charges() -> None:
+    """Multi-hour fixed task enters poor-PM2.5 peak hour -> triggers N95, plus phone charges."""
+    raw = _build_replay_payload("pune", "test")
+    raw["hourly_raw"]["pm2_5"] = [30.0 if h != 10 else 110.0 for h in range(24)]
+    req = PlanRequest(
+        city="pune",
+        budget_tier="under_500",
+        commute_mode="car_petrol_solo",
+        target_commute_mode="electric_metro",
+        commute_km=10.0,
+        members=[HouseholdMember(name="Adult", age=35, conditions=["adult"])],
+        activities=[
+            ActivityItem(
+                id="commute",
+                name="Fixed Wait + Walk",
+                flexibility="fixed",
+                planned_hour=9,
+                duration_min=180,
+                activity_level="light_walk",
+                member_name="Adult",
+                current_mask="none",
+            )
+        ],
+    )
+    bundle = build_evidence_bundle(req, raw, current_hour=8)
+    assert bundle.routine_plan[0].recommended_mask == "n95"
+    assert bundle.emit_less.phone_charges_saved == round(bundle.emit_less.co2_saved_g / 8.2)
+    assert bundle.emit_less.phone_charges_saved > 0
+
+
+def test_window_advice_unsealed_vs_sealed_alignment() -> None:
+    """Window opening threshold compares outdoor minimum strictly against modeled indoor proxy."""
+    raw = _build_replay_payload("pune", "test")
+    raw["hourly_raw"]["pm2_5"] = [55.0 if h == 13 else 180.0 for h in range(24)]
+    snapshot = build_air_snapshot(raw, current_hour=9)
+
+    rs0_plan = score_sanctuary(PlanRequest(city="pune", budget_tier="rs_0"), snapshot)
+    sealed_plan = score_sanctuary(PlanRequest(city="pune", budget_tier="under_2200"), snapshot)
+    assert rs0_plan.window_advice.action == "timed_open"
+    assert rs0_plan.window_advice.duration_minutes == 20
+    assert sealed_plan.window_advice.action == "keep_shut_exhaust"
+    assert sealed_plan.window_advice.duration_minutes == 0
+
+
+def test_engine_facade_exports_and_constants_parity() -> None:
+    """Verify engine facade identity aliases and backend/frontend city & language parity."""
+    import json
+    from pathlib import Path
+
+    import air_quality
+    import engine
+    import exposure
+    import indoor
+
+    assert engine.find_golden_window is air_quality.find_golden_window
+    assert engine.build_air_snapshot is air_quality.build_air_snapshot
+    assert engine.compute_interval_dose_ug is exposure.compute_interval_dose_ug
+    assert engine.compute_emit_less is exposure.compute_emit_less
+    assert engine.score_sanctuary is indoor.score_sanctuary
+
+    root = Path(__file__).resolve().parents[2]
+    constants = json.loads((root / "backend" / "data" / "constants.json").read_text("utf-8"))
+    js_text = (root / "frontend" / "src" / "data" / "constants.js").read_text("utf-8")
+
+    for city_key, meta in constants["cities"].items():
+        assert f"  {city_key}: {{" in js_text
+        assert str(round(float(meta["lat"]), 4)).rstrip("0") in js_text
+        assert str(round(float(meta["lon"]), 4)).rstrip("0") in js_text
+
+    for lang_key in constants["room_audit_fallback_tips"]:
+        assert f'key: "{lang_key}"' in js_text

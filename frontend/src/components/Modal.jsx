@@ -13,6 +13,11 @@ export default function Modal({
   children
 }) {
   const panelRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -26,7 +31,7 @@ export default function Modal({
     function handleKeyDown(e) {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        onCloseRef.current?.();
         return;
       }
       if (e.key === "Tab" && panelRef.current) {
@@ -52,7 +57,7 @@ export default function Modal({
         prevFocused.focus();
       }
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

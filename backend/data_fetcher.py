@@ -229,7 +229,7 @@ def _sanitize_multiday_series(
     days: int = 5,
     as_int: bool = False,
 ) -> tuple[list[Any], int]:
-    """Sanitize a 5x24h series, tracking how many slots were padded/synthesized."""
+    """Sanitize a 5x24h series, counting unique future-day (idx >= 24) fallback substitutions."""
     total = days * 24
     if not values or len(values) < 24:
         out: list[Any] = []
@@ -238,15 +238,15 @@ def _sanitize_multiday_series(
             for v in fallback_day:
                 val = int(round(float(v) * scale)) if as_int else round(float(v) * scale, 1)
                 out.append(val)
-        return out, total
+        return out, max(0, total - 24)
 
     cleaned: list[Any] = []
-    fallback_count = 0
+    future_fallback_count = 0
     for idx in range(total):
         raw = values[idx] if idx < len(values) else None
         if raw is None:
-            fallback_count += 1
             if idx >= 24:
+                future_fallback_count += 1
                 raw = cleaned[idx - 24]
             elif cleaned:
                 raw = cleaned[-1]
@@ -254,7 +254,7 @@ def _sanitize_multiday_series(
                 raw = fallback_day[idx % 24]
         val = int(round(float(raw))) if as_int else round(float(raw), 1)
         cleaned.append(val)
-    return cleaned, fallback_count
+    return cleaned, future_fallback_count
 
 
 def _local_geocode_fallback(query: str, count: int) -> list[dict[str, Any]]:
@@ -679,10 +679,17 @@ async def fetch_city_atmospheric_data(
     }
 
     try:
-        aq_raw, wx_raw = await asyncio.gather(
-            _fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=http_client),
-            _fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=http_client),
-        )
+        if http_client is not None:
+            aq_raw, wx_raw = await asyncio.gather(
+                _fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=http_client),
+                _fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=http_client),
+            )
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.5)) as shared_client:
+                aq_raw, wx_raw = await asyncio.gather(
+                    _fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=shared_client),
+                    _fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=shared_client),
+                )
         payload = _assemble_live_payload(loc, aq_raw.get("hourly", {}), wx_raw.get("hourly", {}))
         _prune_and_store_cache(cache_key, payload)
         return payload

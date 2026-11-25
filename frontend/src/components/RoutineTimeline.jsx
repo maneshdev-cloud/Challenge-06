@@ -14,8 +14,7 @@ import {
   Users,
   Volume2
 } from "lucide-react";
-import { copyToClipboard } from "../utils/clipboard";
-import { formatHourAmPm } from "../utils/formatters";
+import { copyToClipboard, formatHourAmPm } from "../utils/formatters";
 import {
   canUseSpeechSynthesis,
   formatTextForSpeech,

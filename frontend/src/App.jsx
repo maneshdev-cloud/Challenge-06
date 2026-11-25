@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 import { sendChatQuestion } from "./api/client";
 import AppInstallPermissionsModal from "./components/AppInstallPermissionsModal";
@@ -65,9 +65,24 @@ export default function App() {
   const [showMathModal, setShowMathModal] = useState(false);
   const [cleanAirNoteOpen, setCleanAirNoteOpen] = useState(false);
   const [installModalOpen, setInstallModalOpen] = useState(false);
+  const tabRefs = useRef({});
 
   const bundle = planResult?.evidence_bundle;
+  const evidenceSignature = planResult?.evidence_signature || "";
   const isBusy = loading || locating || explaining;
+
+  function handleTabKeyDown(e, index) {
+    let nextIndex = null;
+    if (e.key === "ArrowRight") nextIndex = (index + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") nextIndex = (index - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") nextIndex = 0;
+    else if (e.key === "End") nextIndex = TABS.length - 1;
+    if (nextIndex === null) return;
+    e.preventDefault();
+    const nextTab = TABS[nextIndex];
+    setActiveTab(nextTab.id);
+    tabRefs.current[nextTab.id]?.focus();
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-teal-50/30 pb-10">
@@ -161,22 +176,26 @@ export default function App() {
                   aria-label="Dashboard sections"
                   className="grid grid-cols-4 gap-1"
                 >
-                  {TABS.map(({ id, label, shortLabel, Icon }) => {
+                  {TABS.map(({ id, label, shortLabel, Icon }, index) => {
                     const active = activeTab === id;
                     return (
                       <button
                         key={id}
                         id={`tab-${id}`}
+                        ref={(el) => {
+                          tabRefs.current[id] = el;
+                        }}
                         type="button"
                         role="tab"
+                        tabIndex={active ? 0 : -1}
                         aria-selected={active}
                         aria-controls={`panel-${id}`}
                         onClick={() => setActiveTab(id)}
-                        className={`flex flex-col items-center justify-center gap-0.5 rounded-xl px-1.5 py-2 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:flex-row sm:gap-1.5 sm:px-3 sm:py-2.5 sm:text-xs ${
-                          active
-                            ? "bg-slate-900 text-white shadow-sm"
-                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                        }`}
+                        onKeyDown={(e) => handleTabKeyDown(e, index)}
+                        className={`flex flex-col items-center justify-center gap-0.5 rounded-xl px-1.5 py-2 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:flex-row sm:gap-1.5 sm:px-3 sm:py-2.5 sm:text-xs ${active
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                          }`}
                       >
                         <Icon
                           className={`h-3.5 w-3.5 shrink-0 ${active ? "text-teal-300" : "text-slate-600"}`}
@@ -288,6 +307,7 @@ export default function App() {
               >
                 <GeminiChatDrawer
                   evidenceBundle={bundle}
+                  evidenceSignature={evidenceSignature}
                   language={planConfig?.language || "en"}
                   messages={chatMessages}
                   onAddMessage={(msg) => setChatMessages((prev) => [...prev, msg])}

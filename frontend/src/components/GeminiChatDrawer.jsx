@@ -16,6 +16,7 @@ const SAMPLE_QUESTIONS = [
 
 export default function GeminiChatDrawer({
   evidenceBundle,
+  evidenceSignature = "",
   language,
   messages,
   onAddMessage,
@@ -119,7 +120,7 @@ export default function GeminiChatDrawer({
     setSending(true);
 
     try {
-      const res = await onSendMessage(clean, evidenceBundle, language);
+      const res = await onSendMessage(clean, evidenceBundle, language, evidenceSignature);
       onAddMessage({
         role: "assistant",
         text: res.reply,
@@ -164,11 +165,10 @@ export default function GeminiChatDrawer({
               type="button"
               disabled={sending}
               onClick={() => handleSubmit(q)}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-                isEmergencyPrompt
-                  ? "bg-rose-50 text-rose-900 ring-1 ring-rose-200 hover:bg-rose-100"
-                  : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-teal-50 hover:text-teal-800"
-              }`}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${isEmergencyPrompt
+                ? "bg-rose-50 text-rose-900 ring-1 ring-rose-200 hover:bg-rose-100"
+                : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-teal-50 hover:text-teal-800"
+                }`}
             >
               {isEmergencyPrompt && (
                 <ShieldAlert className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
@@ -187,13 +187,12 @@ export default function GeminiChatDrawer({
             className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
-              className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs leading-relaxed sm:text-sm ${
-                m.role === "user"
-                  ? "bg-slate-900 text-white"
-                  : m.emergency
-                    ? "border-2 border-red-500 bg-red-50 font-semibold text-red-950"
-                    : "bg-slate-100 text-slate-800"
-              }`}
+              className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs leading-relaxed sm:text-sm ${m.role === "user"
+                ? "bg-slate-900 text-white"
+                : m.emergency
+                  ? "border-2 border-red-500 bg-red-50 font-semibold text-red-950"
+                  : "bg-slate-100 text-slate-800"
+                }`}
             >
               <FormattedText text={m.text} dark={m.role === "user"} />
               {m.source && m.role === "assistant" && m.source !== "system" && (
@@ -266,11 +265,10 @@ export default function GeminiChatDrawer({
             onClick={toggleVoiceInput}
             aria-label={listening ? "Stop voice recording" : "Ask by voice"}
             title={listening ? "Stop recording" : "Speak your question"}
-            className={`inline-flex shrink-0 items-center justify-center rounded-2xl p-2.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-              listening
-                ? "animate-pulse bg-rose-600 text-white shadow-sm hover:bg-rose-700"
-                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-            }`}
+            className={`inline-flex shrink-0 items-center justify-center rounded-2xl p-2.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${listening
+              ? "animate-pulse bg-rose-600 text-white shadow-sm hover:bg-rose-700"
+              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
           >
             {listening ? (
               <MicOff className="h-4 w-4" aria-hidden="true" />

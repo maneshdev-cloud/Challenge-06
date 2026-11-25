@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Building2, Check, Copy, FileText, GraduationCap, Mail, MessageCircle, X } from "lucide-react";
-import { copyToClipboard } from "../utils/clipboard";
+import { copyToClipboard } from "../utils/formatters";
 import Modal from "./Modal";
 
 function buildCleanAirNoteText(bundle, mode, senderNote) {
@@ -105,11 +105,10 @@ export default function CleanAirNoteModal({ open, onClose, bundle }) {
           type="button"
           aria-pressed={mode === "school"}
           onClick={() => setMode("school")}
-          className={`flex items-center gap-2 rounded-2xl px-3.5 py-2.5 text-left text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-            mode === "school"
-              ? "bg-slate-900 text-white shadow-sm"
-              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-          }`}
+          className={`flex items-center gap-2 rounded-2xl px-3.5 py-2.5 text-left text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${mode === "school"
+            ? "bg-slate-900 text-white shadow-sm"
+            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
         >
           <GraduationCap className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>For Child&apos;s School (Indoor Assembly/PE)</span>
@@ -119,11 +118,10 @@ export default function CleanAirNoteModal({ open, onClose, bundle }) {
           type="button"
           aria-pressed={mode === "workplace"}
           onClick={() => setMode("workplace")}
-          className={`flex items-center gap-2 rounded-2xl px-3.5 py-2.5 text-left text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-            mode === "workplace"
-              ? "bg-slate-900 text-white shadow-sm"
-              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-          }`}
+          className={`flex items-center gap-2 rounded-2xl px-3.5 py-2.5 text-left text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${mode === "workplace"
+            ? "bg-slate-900 text-white shadow-sm"
+            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
         >
           <Building2 className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>For Workplace / Outdoor Shift</span>

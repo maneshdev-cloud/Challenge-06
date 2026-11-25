@@ -222,4 +222,39 @@ def test_parse_room_audit_markdown_fences_and_houseplant_filter() -> None:
     assert parsed is not None
     assert parsed.source == "gemini"
     assert len(parsed.tips) == 3
+
+
+def test_room_audit_deterministic_tips_localized_and_cost_capped() -> None:
+    """Verify deterministic room audit localizes tips in all 8 langs and caps parsed cost."""
+    en_audit = explainer.build_deterministic_room_audit("Delhi", "en")
+    en_titles = [t.title for t in en_audit.tips]
+    for lang in ("hinglish", "hi", "mr", "kn", "bn", "ta", "te"):
+        loc_audit = explainer.build_deterministic_room_audit("Delhi", lang, current_naqi=180)
+        assert len(loc_audit.tips) == 3
+        assert [t.title for t in loc_audit.tips] != en_titles
+
+    over_budget_json = """{
+      "room_summary": "Bedroom needs window seal.",
+      "tips": [
+        {
+          "title": "Buy HEPA Purifier",
+          "cost_inr": "Rs. 15,000",
+          "action": "Purchase flagship purifier.",
+          "why_it_helps": "Filters particles."
+        },
+        {
+          "title": "Seal Window Gap",
+          "cost_inr": "Rs. 120",
+          "action": "Apply EPDM foam tape.",
+          "why_it_helps": "Blocks traffic dust."
+        }
+      ]
+    }"""
+    parsed = explainer._parse_room_audit_json(
+        over_budget_json, "gemini-2.5-flash", "Delhi", "en", None
+    )
+    assert parsed is not None
+    assert all(t.title != "Buy HEPA Purifier" for t in parsed.tips)
+    assert any(t.title == "Seal Window Gap" for t in parsed.tips)
+    assert len(parsed.tips) == 3
     assert all("snake plant" not in t.title.lower() for t in parsed.tips)

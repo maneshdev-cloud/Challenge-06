@@ -16,5 +16,7 @@ services:
         sync: false
       - key: GEMINI_API_KEYS
         sync: false
+      - key: PRANA_BUNDLE_SECRET
+        generateValue: true
       - key: ALLOWED_ORIGINS
         sync: false

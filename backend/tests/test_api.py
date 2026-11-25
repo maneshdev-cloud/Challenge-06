@@ -122,13 +122,20 @@ def test_plan_all_presets_what_if_and_edge_validation() -> None:
 def test_chat_normal_emergency_and_oversized_rejected() -> None:
     """Verify POST /v1/chat answers grounded queries, triggers ER alert, and enforces length."""
     delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
-    bundle = client.post(
+    plan_res = client.post(
         "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
-    ).json()["evidence_bundle"]
+    ).json()
+    bundle = plan_res["evidence_bundle"]
+    sig = plan_res["evidence_signature"]
 
     chat_ok = client.post(
         "/v1/chat",
-        json={"message": "When should my dad walk?", "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "When should my dad walk?",
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert chat_ok.status_code == 200
     assert chat_ok.json()["emergency_alert"] is False
@@ -136,7 +143,12 @@ def test_chat_normal_emergency_and_oversized_rejected() -> None:
 
     chat_er = client.post(
         "/v1/chat",
-        json={"message": "My son is wheezing badly", "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "My son is wheezing badly",
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert chat_er.status_code == 200
     assert chat_er.json()["emergency_alert"] is True
@@ -145,7 +157,12 @@ def test_chat_normal_emergency_and_oversized_rejected() -> None:
 
     too_long = client.post(
         "/v1/chat",
-        json={"message": "a" * 1501, "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "a" * 1501,
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert too_long.status_code == 422
 
@@ -271,14 +288,21 @@ def test_audit_room_endpoint_validation_and_fallback(monkeypatch) -> None:
 def test_chat_trip_planning_and_simulated_crash_returns_200(monkeypatch) -> None:
     """Verify trip query and simulated uncaught errors always return HTTP 200 cleanly."""
     delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
-    bundle = client.post(
+    plan_res = client.post(
         "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
-    ).json()["evidence_bundle"]
+    ).json()
+    bundle = plan_res["evidence_bundle"]
+    sig = plan_res["evidence_signature"]
 
     monkeypatch.setattr(explainer, "_get_api_keys", lambda: [])
     trip_resp = client.post(
         "/v1/chat",
-        json={"message": "i want to plan a trip", "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "i want to plan a trip",
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert trip_resp.status_code == 200
     assert "trip" in trip_resp.json()["reply"].lower()
@@ -290,7 +314,12 @@ def test_chat_trip_planning_and_simulated_crash_returns_200(monkeypatch) -> None
     monkeypatch.setattr(main_mod, "generate_chat_reply", crashing_chat)
     crash_resp = client.post(
         "/v1/chat",
-        json={"message": "i want to plan a trip", "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "i want to plan a trip",
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert crash_resp.status_code == 200
     assert crash_resp.json()["source"] == "deterministic_template"
@@ -301,7 +330,12 @@ def test_chat_trip_planning_and_simulated_crash_returns_200(monkeypatch) -> None
     monkeypatch.setattr(main_mod, "build_deterministic_chat_reply", crashing_deterministic)
     safe_resp = client.post(
         "/v1/chat",
-        json={"message": "i want to plan a trip", "evidence_bundle": bundle, "language": "en"},
+        json={
+            "message": "i want to plan a trip",
+            "evidence_bundle": bundle,
+            "evidence_signature": sig,
+            "language": "en",
+        },
     )
     assert safe_resp.status_code == 200
     assert "PM2.5" in safe_resp.json()["reply"]
@@ -416,3 +450,148 @@ def test_four_user_categories_update_risk_and_dose_on_same_city() -> None:
     assert len({b["breathe_less"]["baseline_dose_ug"] for b in results.values()}) == 4
     assert len({b["emit_less"]["co2_saved_g"] for b in results.values()}) == 4
     assert len({b["profile_summary"]["warning_banner"] for b in results.values()}) == 4
+
+
+def test_chat_rejects_tampered_evidence_bundle() -> None:
+    """Verify POST /v1/chat rejects missing, bogus, or tampered HMAC evidence bundles (403)."""
+    import copy
+
+    delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
+    plan_res = client.post(
+        "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
+    ).json()
+    bundle = plan_res["evidence_bundle"]
+    sig = plan_res["evidence_signature"]
+    assert sig and len(sig) == 64
+
+    missing = client.post(
+        "/v1/chat",
+        json={"message": "Can dad walk?", "evidence_bundle": bundle, "language": "en"},
+    )
+    assert missing.status_code == 403
+
+    bad_sig = client.post(
+        "/v1/chat",
+        json={
+            "message": "Can dad walk?",
+            "evidence_bundle": bundle,
+            "evidence_signature": "0" * 64,
+            "language": "en",
+        },
+    )
+    assert bad_sig.status_code == 403
+
+    mutations = [
+        lambda b: b["air_snapshot"].__setitem__("current_pm25", 999.0),
+        lambda b: b["air_snapshot"].__setitem__("current_naqi", 499),
+        lambda b: b["breathe_less"].__setitem__("dose_avoided_ug", 1234.5),
+        lambda b: b["emit_less"].__setitem__("co2_saved_g", 99999.0),
+        lambda b: b["grounded_metrics"]["pm25"].append(777.7),
+        lambda b: b["grounded_numbers"].append(888.8),
+    ]
+    for mutate in mutations:
+        tampered = copy.deepcopy(bundle)
+        mutate(tampered)
+        resp = client.post(
+            "/v1/chat",
+            json={
+                "message": "Can dad walk?",
+                "evidence_bundle": tampered,
+                "evidence_signature": sig,
+                "language": "en",
+            },
+        )
+        assert resp.status_code == 403
+
+
+def test_emergency_triage_bypasses_rate_limit() -> None:
+    """Verify acute distress ER interception succeeds even when caller IP is rate-limited."""
+    import time
+    from collections import deque
+
+    delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
+    plan_res = client.post(
+        "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
+    ).json()
+    bundle = plan_res["evidence_bundle"]
+    sig = plan_res["evidence_signature"]
+    test_ip = "203.0.113.99"
+
+    main_mod._RATE_BUCKETS.clear()
+    main_mod._RATE_BUCKETS[test_ip] = deque([time.monotonic()] * main_mod.RATE_LIMIT_MAX_REQUESTS)
+    try:
+        blocked = client.post(
+            "/v1/chat",
+            headers={"x-forwarded-for": test_ip},
+            json={
+                "message": "When should my dad walk?",
+                "evidence_bundle": bundle,
+                "evidence_signature": sig,
+                "language": "en",
+            },
+        )
+        assert blocked.status_code == 429
+
+        er_ok = client.post(
+            "/v1/chat",
+            headers={"x-forwarded-for": test_ip},
+            json={
+                "message": "My son can’t breathe",
+                "evidence_bundle": bundle,
+                "evidence_signature": sig,
+                "language": "en",
+            },
+        )
+        assert er_ok.status_code == 200
+        assert er_ok.json()["emergency_alert"] is True
+        assert er_ok.json()["source"] == "emergency_triage"
+        assert "108" in er_ok.json()["reply"]
+    finally:
+        main_mod._RATE_BUCKETS.clear()
+
+
+def test_audit_room_strips_exif_and_rejects_oversized_pixel_bomb(monkeypatch) -> None:
+    """Verify /v1/audit-room strips JPEG EXIF metadata and blocks >25MP pixel bombs."""
+    exif = Image.Exif()
+    exif[271] = "TestCameraGPSLeak"
+    jpg_buf = io.BytesIO()
+    Image.new("RGB", (64, 64), color=(140, 170, 200)).save(
+        jpg_buf, format="JPEG", exif=exif.tobytes()
+    )
+    raw_jpg = jpg_buf.getvalue()
+    assert b"TestCameraGPSLeak" in raw_jpg
+
+    captured: list[bytes] = []
+
+    def capture_vision(
+        _prompt: str, image_bytes: bytes, mime_type: str, _model: str, _key: str
+    ) -> str:
+        assert mime_type == "image/jpeg"
+        captured.append(image_bytes)
+        return (
+            '{"room_summary": "Window track needs foam seal.", '
+            '"tips": ['
+            '{"title": "Foam Seal", "cost_inr": "Rs. 120", '
+            '"action": "Apply foam strip.", "why_it_helps": "Cuts dust."}'
+            "]}"
+        )
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-exif-key")
+    monkeypatch.setattr(explainer, "_call_gemini_vision_sync", capture_vision)
+    ok_resp = client.post(
+        "/v1/audit-room",
+        data={"city": "Delhi", "language": "en"},
+        files={"file": ("room.jpg", raw_jpg, "image/jpeg")},
+    )
+    assert ok_resp.status_code == 200
+    assert len(captured) == 1
+    assert b"TestCameraGPSLeak" not in captured[0]
+
+    bomb_buf = io.BytesIO()
+    Image.new("1", (6000, 5000)).save(bomb_buf, format="PNG")
+    bomb_resp = client.post(
+        "/v1/audit-room",
+        data={"city": "Delhi", "language": "en"},
+        files={"file": ("bomb.png", bomb_buf.getvalue(), "image/png")},
+    )
+    assert bomb_resp.status_code == 415

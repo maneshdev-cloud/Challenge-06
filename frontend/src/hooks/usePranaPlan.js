@@ -35,6 +35,12 @@ function saveHousehold(config) {
     localStorage.setItem(
       HOUSEHOLD_STORAGE_KEY,
       JSON.stringify({
+        city: config.city || "mumbai",
+        area_name: config.area_name || null,
+        state: config.state || null,
+        lat: config.lat ?? null,
+        lon: config.lon ?? null,
+        language: config.language || "en",
         user_category: config.user_category || "adults_commuters",
         members: config.members,
         rooms: config.rooms,
@@ -129,6 +135,7 @@ export default function usePranaPlan() {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
+      requestSeqRef.current += 1;
       debounceTimerRef.current = setTimeout(() => {
         debounceTimerRef.current = null;
         runPlan(config, staleFlag, true, "Recalculating plan...");
@@ -185,13 +192,13 @@ export default function usePranaPlan() {
           ...baseTemplate,
           ...(saved || {}),
           user_category: initialCat,
-          city: "mumbai",
-          language: "en",
+          city: saved?.city || "mumbai",
+          language: saved?.language || "en",
           preset_id: null,
-          area_name: null,
-          state: null,
-          lat: null,
-          lon: null,
+          area_name: saved?.area_name || null,
+          state: saved?.state || null,
+          lat: saved?.lat ?? null,
+          lon: saved?.lon ?? null,
           walk_override_hour: null
         };
         setActiveCategoryId(initialCat);
@@ -268,67 +275,49 @@ export default function usePranaPlan() {
     runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
   }
 
-  function handleCityChange(newCity) {
+  function updateLocationAndRun(patch, clearPreset = true) {
     if (!planConfig) return;
     const nextConfig = {
       ...planConfig,
-      city: newCity,
-      area_name: null,
-      state: null,
-      lat: null,
-      lon: null,
-      walk_override_hour: null,
-      preset_id: null
+      ...patch,
+      ...(clearPreset ? { walk_override_hour: null, preset_id: null } : {})
     };
-    setActivePresetId(null);
+    if (clearPreset) setActivePresetId(null);
     setPlanConfig(nextConfig);
+    saveHousehold(nextConfig);
     setGpsError(null);
     setLoading(true);
     runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
   }
 
+  function handleCityChange(newCity) {
+    updateLocationAndRun({ city: newCity, area_name: null, state: null, lat: null, lon: null });
+  }
+
   function handleAreaChange(selectedArea) {
     if (!planConfig) return;
-    setGpsError(null);
     if (selectedArea === "__center__") {
-      const nextConfig = { ...planConfig, area_name: null, state: null, lat: null, lon: null };
-      setPlanConfig(nextConfig);
-      setLoading(true);
-      runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
+      updateLocationAndRun({ area_name: null, state: null, lat: null, lon: null }, false);
       return;
     }
     const areas = citiesMap[planConfig.city]?.areas || [];
     const match = areas.find((a) => a.name === selectedArea);
     if (!match) return;
-    const nextConfig = {
-      ...planConfig,
-      area_name: match.name,
-      state: null,
-      lat: match.lat,
-      lon: match.lon
-    };
-    setPlanConfig(nextConfig);
-    setLoading(true);
-    runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
+    updateLocationAndRun(
+      { area_name: match.name, state: null, lat: match.lat, lon: match.lon },
+      false
+    );
   }
 
   function handleSelectGeocode(item) {
-    if (!planConfig || !item) return;
-    setGpsError(null);
-    setActivePresetId(null);
-    const nextConfig = {
-      ...planConfig,
+    if (!item) return;
+    updateLocationAndRun({
       city: item.name,
       area_name: item.name,
       state: item.state || null,
       lat: item.lat,
-      lon: item.lon,
-      walk_override_hour: null,
-      preset_id: null
-    };
-    setPlanConfig(nextConfig);
-    setLoading(true);
-    runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
+      lon: item.lon
+    });
   }
 
   function handleUseMyLocation() {
@@ -346,21 +335,14 @@ export default function usePranaPlan() {
         const lon = Number(pos.coords.longitude.toFixed(4));
         try {
           const rev = await reverseGeocode(lat, lon);
-          const nextConfig = {
-            ...planConfig,
+          setLocating(false);
+          updateLocationAndRun({
             city: rev.city,
             area_name: rev.area_name,
             state: rev.state || null,
             lat,
-            lon,
-            walk_override_hour: null,
-            preset_id: null
-          };
-          setActivePresetId(null);
-          setPlanConfig(nextConfig);
-          setLocating(false);
-          setLoading(true);
-          runPlan(nextConfig, simulateStale, false, "Fetching live air data...");
+            lon
+          });
         } catch (err) {
           setLocating(false);
           setGpsError(`Could not resolve area name (${err.message}). Search your city manually.`);
@@ -378,6 +360,7 @@ export default function usePranaPlan() {
     if (!planConfig) return;
     const nextConfig = { ...planConfig, language: newLang };
     setPlanConfig(nextConfig);
+    saveHousehold(nextConfig);
     runPlan(nextConfig, simulateStale, false, "Recalculating plan...");
   }
 
