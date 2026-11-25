@@ -282,8 +282,8 @@ export default function RoutineTimeline({
                   aria-label={speaking ? "Stop voice brief" : "Listen to daily brief"}
                   className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${
                     speaking
-                      ? "bg-rose-600 text-white hover:bg-rose-700"
-                      : "bg-teal-600 text-white hover:bg-teal-500"
+                      ? "bg-rose-700 text-white hover:bg-rose-800"
+                      : "bg-teal-700 text-white hover:bg-teal-800"
                   }`}
                 >
                   {speaking ? (
