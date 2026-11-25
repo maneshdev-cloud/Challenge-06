@@ -8,11 +8,15 @@ PRANA-AI converts raw Pan-India air-quality forecasts into constraint-aware dail
 
 ## Live Deployment & 5-Minute Keep-Warm Setup
 
-- **Live Web App URL:** `<YOUR_VERCEL_OR_RENDER_FRONTEND_URL>` _(deploy ready via [`render.yaml`](render.yaml) + Vite static frontend; set `VITE_API_BASE_URL` on the frontend and `ALLOWED_ORIGINS` on the backend)_
+- **Live Web App URL:** https://prana-ai-promptwars.vercel.app/ _(deploy ready via [`render.yaml`](render.yaml) + Vite static frontend; set `VITE_API_BASE_URL` on the frontend and `ALLOWED_ORIGINS` on the backend)_
 - **Backend Health Endpoint:** `GET /health` and `HEAD /health` -> `200 OK` (`{"status":"ok","app":"PRANA-AI","version":"1.0.0"}`)
 - **Free 5-Minute Keep-Warm Ping (Prevents Cold Starts `<1s` Response):**
   1. **UptimeRobot (Recommended Free Tier):** Add a **HTTP(s)** monitor pointing to `https://<your-backend-domain>/health` with interval **5 minutes** (`HEAD` or `GET`—both are explicitly supported on `@app.api_route("/health", methods=["GET", "HEAD"])`).
   2. **Backup GitHub Actions Cron:** Included in [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) running every `*/5 * * * *`; simply add `PRANA_HEALTH_URL` under repository Settings -> Secrets -> Actions.
+
+## Demo Video
+
+Watch the 2 minute 30 second demo video: [PRANA-AI Demo Video](https://drive.google.com/file/d/19EsjzZ44RImpyeHIlbGk8uoRgqjRx6Ag/view?usp=drivesdk) (Google Drive, no sign in needed). It shows the live app, a code walkthrough of the key parts, the challenges faced, and how Google Antigravity and Gemini helped build it.
 
 ---
 
@@ -150,6 +154,22 @@ npm run build    # Production bundle + PWA manifest & service worker in frontend
 
 ---
 
+## Prompts Used
+
+The app was built with Google Antigravity, and Gemini is guided by two system prompts in `backend/explainer.py`. Python computes every number first and packs it into an `EvidenceBundle`; Gemini only explains the precomputed facts in plain family language.
+
+### 1. Grounded plan and chat explainer (`SYSTEM_PROMPT`)
+
+"You are PRANA-AI, a warm, helpful neighbor and family air-quality guide in India. You receive precomputed air and schedule facts in JSON." The prompt then sets strict rules: never invent, recalculate, round, or alter any number from the JSON; keep PM2.5 concentration and India NAQI separate; keep personal exposure avoided separate from travel CO2e saved; never call any polluted outdoor window "safe"; never recommend indoor houseplants for PM2.5 removal; no technical jargon; respect fixed commitments like school, work, and delivery shifts; state clearly when live data is unavailable and historical replay is used; and match the user's language in a warm, friendly 8th-grade reading level.
+
+### 2. Room photo audit (`VISION_SYSTEM_PROMPT`)
+
+"You are PRANA-AI, an indoor air quality specialist helping Indian families lower indoor PM2.5 at low cost (Rs 0 to Rs 500)." The prompt asks Gemini Vision to inspect the uploaded room or kitchen photo for ventilation and dust issues (window and door gaps, kitchen exhaust fan placement, soft dust traps) and return strict JSON only with exactly 3 tips costing Rs 0 to Rs 500, each with a short title, a specific step, and a simple reason. It also forbids houseplant recommendations and invented sensor numbers.
+
+### 3. Failover chain
+
+When Gemini is unavailable, the app rotates across API keys on quota errors and across four models (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-3.5-flash-lite`, `gemini-3.8-flash`) on 404, 503, and 504 errors with an 8 second per call cap, then falls back to the deterministic offline engine that answers with the same real numbers.
+
 ## Honest Limitations
 
 1. **Gridded Satellite/Model Data vs. Hyperlocal Monitors:** Live forecasts come from Open-Meteo (`~11 km` ECMWF CAMS + ERA5 grid), which smooths hyperlocal roadside hotspots or construction plumes compared to a doorstep CPCB CAAQMS sensor.
@@ -157,3 +177,12 @@ npm run build    # Production bundle + PWA manifest & service worker in frontend
 3. **Visual IAQ Estimates:** `POST /v1/audit-room` inspects visible room features (window gaps, exhaust placement, fabric dust traps) and explicitly excludes PM2.5 sensor claims.
 4. **Device Voice & PWA Differences:** Web Speech synthesis (`speechSynthesis`) voice quality depends on OS language packs installed on a user's Android/iOS device; `SpeechRecognition` voice input gracefully hides on browsers without Web Speech STT support (such as Firefox).
 5. **External Deployment & Keep-Warm:** `render.yaml`, `GET/HEAD /health`, and `.github/workflows/keep-warm.yml` are committed and tested locally, while provisioning the public host URL and external UptimeRobot monitor happens at deploy time.
+
+## Future Improvements
+
+1. Hyperlocal CPCB sensor data alongside the 11 km grid forecast, so roadside hotspots show up instead of being smoothed away.
+2. Real indoor PM2.5 sensor pairing for the room audit, replacing modeled estimates with live readings.
+3. Push alerts when the golden window opens, so families get the best hours without opening the app.
+4. More Indian languages beyond the current 8, starting with the most spoken ones in each state.
+5. Offline first cached forecasts, so the daily plan stays available when the network drops.
+6. School and office admin views, so a whole class or team can plan around the same air data.
