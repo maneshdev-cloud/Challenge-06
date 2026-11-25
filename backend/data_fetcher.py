@@ -499,7 +499,7 @@ async def fetch_city_atmospheric_data(
     replay_city = FALLBACK_REPLAY["cities"][fallback_key]
     try:
         owns_client = http_client is None
-        client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=4.0))
+        client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.5))
         try:
             aq_resp, wx_resp = await asyncio.gather(
                 client.get(OPEN_METEO_AQ_URL, params=aq_params),

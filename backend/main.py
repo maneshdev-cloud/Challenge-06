@@ -6,7 +6,13 @@ import asyncio
 import io
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
