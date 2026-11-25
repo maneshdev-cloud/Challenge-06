@@ -1,0 +1,180 @@
+{
+  "app_name": "PRANA-AI",
+  "cities": {
+    "mumbai": {
+      "name": "Mumbai",
+      "lat": 19.0760,
+      "lon": 72.8777,
+      "local_language": "mr",
+      "meteorology_note": "Coastal sea-breeze transitions often clear afternoon air, though calm mornings and roadside dust/NO2 create sharp micro-peaks.",
+      "areas": [
+        {"name": "Andheri", "lat": 19.1136, "lon": 72.8697},
+        {"name": "Malad West", "lat": 19.1874, "lon": 72.8484},
+        {"name": "Bandra", "lat": 19.0596, "lon": 72.8295},
+        {"name": "Dadar", "lat": 19.0178, "lon": 72.8478},
+        {"name": "Navi Mumbai", "lat": 19.0330, "lon": 73.0297}
+      ]
+    },
+    "pune": {
+      "name": "Pune",
+      "lat": 18.5204,
+      "lon": 73.8567,
+      "local_language": "mr",
+      "meteorology_note": "Basin/valley nighttime cooling traps calm-air smog near sunrise before midday convection disperses pollutants.",
+      "areas": [
+        {"name": "Kothrud", "lat": 18.5074, "lon": 73.8077},
+        {"name": "Hinjewadi", "lat": 18.5913, "lon": 73.7389},
+        {"name": "Shivajinagar", "lat": 18.5308, "lon": 73.8475},
+        {"name": "Baner", "lat": 18.5590, "lon": 73.7868},
+        {"name": "Hadapsar", "lat": 18.5089, "lon": 73.9259}
+      ]
+    },
+    "delhi": {
+      "name": "Delhi",
+      "lat": 28.6139,
+      "lon": 77.2090,
+      "local_language": "hi",
+      "meteorology_note": "Indo-Gangetic plain winter thermal inversions trap ground-level PM2.5 overnight until daytime mixing raises the boundary layer.",
+      "areas": [
+        {"name": "Dwarka", "lat": 28.5921, "lon": 77.0460},
+        {"name": "Anand Vihar", "lat": 28.6469, "lon": 77.3164},
+        {"name": "Rohini", "lat": 28.7495, "lon": 77.0565},
+        {"name": "Saket", "lat": 28.5246, "lon": 77.2066},
+        {"name": "Connaught Place", "lat": 28.6315, "lon": 77.2167}
+      ]
+    },
+    "bengaluru": {
+      "name": "Bangalore",
+      "lat": 12.9716,
+      "lon": 77.5946,
+      "local_language": "kn",
+      "meteorology_note": "Moderate plateau winds aid dispersion, with primary exposure pockets near arterial traffic corridors and construction dust.",
+      "areas": [
+        {"name": "Koramangala", "lat": 12.9352, "lon": 77.6245},
+        {"name": "Whitefield", "lat": 12.9698, "lon": 77.7500},
+        {"name": "Indiranagar", "lat": 12.9784, "lon": 77.6408},
+        {"name": "Hebbal", "lat": 13.0354, "lon": 77.5988}
+      ]
+    },
+    "kolkata": {
+      "name": "Kolkata",
+      "lat": 22.5726,
+      "lon": 88.3639,
+      "local_language": "bn",
+      "meteorology_note": "High winter humidity and calm evening boundary layers slow particle dispersion after sunset.",
+      "areas": [
+        {"name": "Salt Lake", "lat": 22.5867, "lon": 88.4171},
+        {"name": "Park Street", "lat": 22.5529, "lon": 88.3532},
+        {"name": "Ballygunge", "lat": 22.5280, "lon": 88.3659},
+        {"name": "Howrah", "lat": 22.5958, "lon": 88.2636}
+      ]
+    }
+  },
+  "cpcb_pm25_breakpoints": [
+    {"c_lo": 0,   "c_hi": 30,  "i_lo": 0,   "i_hi": 50,  "category": "Good"},
+    {"c_lo": 31,  "c_hi": 60,  "i_lo": 51,  "i_hi": 100, "category": "Satisfactory"},
+    {"c_lo": 61,  "c_hi": 90,  "i_lo": 101, "i_hi": 200, "category": "Moderate"},
+    {"c_lo": 91,  "c_hi": 120, "i_lo": 201, "i_hi": 300, "category": "Poor"},
+    {"c_lo": 121, "c_hi": 250, "i_lo": 301, "i_hi": 400, "category": "Very Poor"},
+    {"c_lo": 251, "c_hi": 500, "i_lo": 401, "i_hi": 500, "category": "Severe"}
+  ],
+  "cpcb_pm10_breakpoints": [
+    {"c_lo": 0,   "c_hi": 50,  "i_lo": 0,   "i_hi": 50,  "category": "Good"},
+    {"c_lo": 51,  "c_hi": 100, "i_lo": 51,  "i_hi": 100, "category": "Satisfactory"},
+    {"c_lo": 101, "c_hi": 250, "i_lo": 101, "i_hi": 200, "category": "Moderate"},
+    {"c_lo": 251, "c_hi": 350, "i_lo": 201, "i_hi": 300, "category": "Poor"},
+    {"c_lo": 351, "c_hi": 430, "i_lo": 301, "i_hi": 400, "category": "Very Poor"},
+    {"c_lo": 431, "c_hi": 600, "i_lo": 401, "i_hi": 500, "category": "Severe"}
+  ],
+  "cpcb_no2_breakpoints": [
+    {"c_lo": 0,   "c_hi": 40,  "i_lo": 0,   "i_hi": 50,  "category": "Good"},
+    {"c_lo": 41,  "c_hi": 80,  "i_lo": 51,  "i_hi": 100, "category": "Satisfactory"},
+    {"c_lo": 81,  "c_hi": 180, "i_lo": 101, "i_hi": 200, "category": "Moderate"},
+    {"c_lo": 181, "c_hi": 280, "i_lo": 201, "i_hi": 300, "category": "Poor"},
+    {"c_lo": 281, "c_hi": 400, "i_lo": 301, "i_hi": 400, "category": "Very Poor"},
+    {"c_lo": 401, "c_hi": 600, "i_lo": 401, "i_hi": 500, "category": "Severe"}
+  ],
+  "usepa_ventilation_m3_hr": {
+    "sleep": 0.45,
+    "seated": 0.55,
+    "light_walk": 1.25,
+    "brisk_walk": 1.60,
+    "child_play": 1.35,
+    "elderly_walk": 1.30,
+    "running_or_outdoor_work": 2.70
+  },
+  "mask_filtration_efficiency": {
+    "none": 0.00,
+    "cloth": 0.20,
+    "surgical": 0.35,
+    "n95": 0.80
+  },
+  "microenv_multipliers": {
+    "open_road_2w_auto": 1.55,
+    "walk_sidewalk": 1.15,
+    "bus_non_ac": 1.15,
+    "car_ac_recirc": 0.80,
+    "electric_metro": 0.55,
+    "indoor_open": 0.85,
+    "indoor_shut": 0.50,
+    "indoor_sealed": 0.28
+  },
+  "arai_transport_emissions": {
+    "car_petrol_solo":    {"label": "Petrol Car (Solo)",     "co2_g_pkm": 164.0, "pm25_mg_pkm": 18.0, "microenv": "car_ac_recirc"},
+    "car_diesel_solo":    {"label": "Diesel Car (Solo)",     "co2_g_pkm": 178.0, "pm25_mg_pkm": 42.0, "microenv": "car_ac_recirc"},
+    "carpool_3p":         {"label": "Carpool (3 People)",    "co2_g_pkm": 55.0,  "pm25_mg_pkm": 6.0,  "microenv": "car_ac_recirc"},
+    "two_wheeler_petrol": {"label": "2-Wheeler (Petrol)",    "co2_g_pkm": 48.0,  "pm25_mg_pkm": 15.0, "microenv": "open_road_2w_auto"},
+    "auto_cng":           {"label": "CNG Auto-Rickshaw",     "co2_g_pkm": 75.0,  "pm25_mg_pkm": 8.0,  "microenv": "open_road_2w_auto"},
+    "city_bus":           {"label": "City Bus",              "co2_g_pkm": 22.0,  "pm25_mg_pkm": 2.1,  "microenv": "bus_non_ac"},
+    "electric_metro":     {"label": "Electric Metro",        "co2_g_pkm": 14.0,  "pm25_mg_pkm": 0.0,  "microenv": "electric_metro"},
+    "walk_or_cycle":      {"label": "Walk / Cycle",          "co2_g_pkm": 0.0,   "pm25_mg_pkm": 0.0,  "microenv": "walk_sidewalk"}
+  },
+  "berkeley_earth_cig_ug": 330.0,
+  "budget_tier_limits_inr": {
+    "rs_0": 0,
+    "under_500": 500,
+    "under_2200": 2200
+  },
+  "iaq_hacks": [
+    {
+      "id": "tadka_isolation",
+      "tier": "Rs 0",
+      "max_cost_inr": 0,
+      "title": "Kitchen Tadka Isolation Protocol",
+      "action": "Close the kitchen door BEFORE lighting the gas stove, run the exhaust fan during cooking, and keep it running 15 minutes after turning off the burner.",
+      "impact_note": "Prevents ~250-320 ug/m3 cooking PM2.5 spikes from entering living/sleeping rooms."
+    },
+    {
+      "id": "wet_mop_pochha",
+      "tier": "Rs 0",
+      "max_cost_inr": 0,
+      "title": "Wet Mop (Pochha) Instead of Dry Broom (Jhadu)",
+      "action": "Replace dry sweeping with damp mopping once or twice daily, especially in the Sanctuary Room.",
+      "impact_note": "Avoids resuspending settled dust (~115 ug/m3 indoor spike)."
+    },
+    {
+      "id": "zero_indoor_combustion",
+      "tier": "Rs 0",
+      "max_cost_inr": 0,
+      "title": "Zero Indoor Combustion",
+      "action": "Pause agarbatti, dhoop, and mosquito coils on poor-air days; use a sealed LED diya and mosquito net or liquid vaporizer.",
+      "impact_note": "Prevents 220-380 ug/m3 overnight indoor PM2.5 buildup."
+    },
+    {
+      "id": "seal_and_n95",
+      "tier": "Under Rs 500",
+      "max_cost_inr": 500,
+      "title": "Seal Sanctuary Room Window Gaps + Fitted N95",
+      "action": "Apply foam weatherstripping tape (Rs 150) or damp folded towels along leaky window frames; keep fitted N95/FFP2 masks (Rs 80-150) for fixed commutes.",
+      "impact_note": "Cuts outdoor infiltration by ~44% and reduces commute inhaled dose by ~80%."
+    },
+    {
+      "id": "diy_box_fan_hepa",
+      "tier": "Under Rs 2,200",
+      "max_cost_inr": 2200,
+      "title": "DIY Box Fan + MERV-13 / HEPA Filter",
+      "action": "Strap a square MERV-13/HEPA replacement filter (Rs 900) to the intake of a thermally protected box fan (Rs 1,200) inside the Sanctuary Room.",
+      "impact_note": "Delivers ~65-70% of the clean air delivery of a Rs 15,000 commercial purifier. Never place near open flames."
+    }
+  ]
+}

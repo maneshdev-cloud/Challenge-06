@@ -1,0 +1,113 @@
+[
+  {
+    "id": "delhi_family",
+    "label": "Delhi Family (Asthmatic Child + Senior)",
+    "short_tag": "Delhi • 4-Person • Under Rs 2,200",
+    "summary": "8yo asthmatic child + 72yo senior, 16 km petrol car commute, DIY purifier budget",
+    "city": "delhi",
+    "language": "en",
+    "budget_tier": "under_2200",
+    "commute_mode": "car_petrol_solo",
+    "commute_km": 16.0,
+    "target_commute_mode": "electric_metro",
+    "uses_agarbatti_or_coils": false,
+    "dry_sweeps": true,
+    "members": [
+      {"name": "Aarav (Child)", "age": 8, "conditions": ["asthma", "child"]},
+      {"name": "Dadi / Dada", "age": 72, "conditions": ["elderly", "cardiac"]},
+      {"name": "Parent", "age": 38, "conditions": ["adult"]}
+    ],
+    "rooms": [
+      {"name": "Front Living Room", "ext_windows": 2, "road_facing": true, "kitchen_adjacent": true, "large_volume": true},
+      {"name": "Inner Back Bedroom", "ext_windows": 1, "road_facing": false, "kitchen_adjacent": false, "large_volume": false},
+      {"name": "Kitchen-Side Dining", "ext_windows": 1, "road_facing": false, "kitchen_adjacent": true, "large_volume": false}
+    ],
+    "activities": [
+      {"id": "school_drop", "name": "School Bus Stop & Drop-Off", "flexibility": "fixed", "planned_hour": 7, "duration_min": 45, "activity_level": "light_walk", "member_name": "Aarav (Child)", "current_mask": "surgical", "is_commute": false, "is_work_shift": false},
+      {"id": "office_commute", "name": "Office Commute (16 km)", "flexibility": "fixed", "planned_hour": 9, "duration_min": 60, "activity_level": "seated", "member_name": "Parent", "current_mask": "none", "is_commute": true, "is_work_shift": false},
+      {"id": "senior_walk", "name": "Senior Morning Walk", "flexibility": "flexible", "planned_hour": 7, "duration_min": 40, "activity_level": "elderly_walk", "member_name": "Dadi / Dada", "current_mask": "none", "is_commute": false, "is_work_shift": false},
+      {"id": "child_play", "name": "Child Outdoor Park Play", "flexibility": "flexible", "planned_hour": 17, "duration_min": 45, "activity_level": "child_play", "member_name": "Aarav (Child)", "current_mask": "none", "is_commute": false, "is_work_shift": false},
+      {"id": "market_run", "name": "Evening Grocery Errand", "flexibility": "flexible", "planned_hour": 19, "duration_min": 30, "activity_level": "light_walk", "member_name": "Parent", "current_mask": "none", "is_commute": false, "is_work_shift": false}
+    ]
+  },
+  {
+    "id": "mumbai_student",
+    "label": "Mumbai College Student (Andheri PG)",
+    "short_tag": "Mumbai • Student • Rs 0 Budget",
+    "summary": "12 km auto commute to college, evening jog, Rs 0 behavioral hacks",
+    "city": "mumbai",
+    "language": "en",
+    "budget_tier": "rs_0",
+    "commute_mode": "auto_cng",
+    "commute_km": 12.0,
+    "target_commute_mode": "electric_metro",
+    "uses_agarbatti_or_coils": true,
+    "dry_sweeps": true,
+    "members": [
+      {"name": "Rohan (Student)", "age": 21, "conditions": ["adult"]}
+    ],
+    "rooms": [
+      {"name": "Shared PG Room (Road Side)", "ext_windows": 2, "road_facing": true, "kitchen_adjacent": false, "large_volume": false},
+      {"name": "Inner Study Corner", "ext_windows": 0, "road_facing": false, "kitchen_adjacent": false, "large_volume": false}
+    ],
+    "activities": [
+      {"id": "college_commute", "name": "College Lecture Commute (12 km)", "flexibility": "fixed", "planned_hour": 8, "duration_min": 45, "activity_level": "seated", "member_name": "Rohan (Student)", "current_mask": "none", "is_commute": true, "is_work_shift": false},
+      {"id": "evening_jog", "name": "Evening Jog", "flexibility": "flexible", "planned_hour": 19, "duration_min": 40, "activity_level": "running_or_outdoor_work", "member_name": "Rohan (Student)", "current_mask": "none", "is_commute": false, "is_work_shift": false},
+      {"id": "errand_walk", "name": "Tiffin & Errand Walk", "flexibility": "flexible", "planned_hour": 9, "duration_min": 25, "activity_level": "light_walk", "member_name": "Rohan (Student)", "current_mask": "none", "is_commute": false, "is_work_shift": false}
+    ]
+  },
+  {
+    "id": "pune_elderly",
+    "label": "Pune Elderly Couple (COPD / Hypertension)",
+    "short_tag": "Pune • 68 & 71 yrs • Under Rs 500",
+    "summary": "6:30 AM walk + daily agarbatti/dhoop + clinic visit, foam seal & N95 budget",
+    "city": "pune",
+    "language": "en",
+    "budget_tier": "under_500",
+    "commute_mode": "auto_cng",
+    "commute_km": 6.0,
+    "target_commute_mode": "city_bus",
+    "uses_agarbatti_or_coils": true,
+    "dry_sweeps": true,
+    "members": [
+      {"name": "Mr. Kulkarni", "age": 71, "conditions": ["elderly", "copd"]},
+      {"name": "Mrs. Kulkarni", "age": 68, "conditions": ["elderly", "hypertension"]}
+    ],
+    "rooms": [
+      {"name": "Road-Facing Veranda Lounge", "ext_windows": 2, "road_facing": true, "kitchen_adjacent": false, "large_volume": true},
+      {"name": "Back Garden Bedroom", "ext_windows": 1, "road_facing": false, "kitchen_adjacent": false, "large_volume": false},
+      {"name": "Kitchen Corridor", "ext_windows": 1, "road_facing": false, "kitchen_adjacent": true, "large_volume": false}
+    ],
+    "activities": [
+      {"id": "morning_walk", "name": "Morning Park Walk", "flexibility": "flexible", "planned_hour": 6, "duration_min": 45, "activity_level": "elderly_walk", "member_name": "Mr. Kulkarni", "current_mask": "cloth", "is_commute": false, "is_work_shift": false},
+      {"id": "clinic_visit", "name": "Fixed Clinic Checkup (6 km)", "flexibility": "fixed", "planned_hour": 10, "duration_min": 40, "activity_level": "seated", "member_name": "Mrs. Kulkarni", "current_mask": "none", "is_commute": true, "is_work_shift": false},
+      {"id": "sabzi_market", "name": "Vegetable Market Trip", "flexibility": "flexible", "planned_hour": 8, "duration_min": 30, "activity_level": "light_walk", "member_name": "Mrs. Kulkarni", "current_mask": "none", "is_commute": false, "is_work_shift": false}
+    ]
+  },
+  {
+    "id": "delivery_rider",
+    "label": "Outdoor Delivery Rider (Equity Mode)",
+    "short_tag": "Delhi • 8h 2W Shift • Under Rs 500",
+    "summary": "Non-negotiable 8-hour outdoor 2-wheeler shift: harm-reduction N95 + break timing",
+    "city": "delhi",
+    "language": "en",
+    "budget_tier": "under_500",
+    "commute_mode": "two_wheeler_petrol",
+    "commute_km": 40.0,
+    "target_commute_mode": "two_wheeler_petrol",
+    "uses_agarbatti_or_coils": true,
+    "dry_sweeps": true,
+    "members": [
+      {"name": "Vikram (Rider)", "age": 29, "conditions": ["outdoor_worker"]}
+    ],
+    "rooms": [
+      {"name": "Road-Side Room Entry", "ext_windows": 1, "road_facing": true, "kitchen_adjacent": true, "large_volume": false},
+      {"name": "Inner Sleeping Alcove", "ext_windows": 0, "road_facing": false, "kitchen_adjacent": false, "large_volume": false}
+    ],
+    "activities": [
+      {"id": "shift_morning", "name": "Morning-Afternoon Delivery Shift (4h)", "flexibility": "fixed", "planned_hour": 8, "duration_min": 240, "activity_level": "running_or_outdoor_work", "member_name": "Vikram (Rider)", "current_mask": "cloth", "is_commute": true, "is_work_shift": true},
+      {"id": "shift_evening", "name": "Evening Peak Delivery Shift (4h)", "flexibility": "fixed", "planned_hour": 17, "duration_min": 240, "activity_level": "running_or_outdoor_work", "member_name": "Vikram (Rider)", "current_mask": "cloth", "is_commute": true, "is_work_shift": true},
+      {"id": "lunch_rest", "name": "Midday Outdoor Tea / Rest", "flexibility": "flexible", "planned_hour": 13, "duration_min": 30, "activity_level": "light_walk", "member_name": "Vikram (Rider)", "current_mask": "none", "is_commute": false, "is_work_shift": false}
+    ]
+  }
+]

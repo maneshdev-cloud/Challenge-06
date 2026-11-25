@@ -1,0 +1,21 @@
+name: Keep Backend Warm (5-min Ping)
+
+on:
+  schedule:
+    # Pings /health every 5 minutes to prevent cold starts alongside UptimeRobot
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping PRANA-AI /health endpoint
+        env:
+          HEALTH_URL: ${{ secrets.PRANA_HEALTH_URL }}
+        run: |
+          if [ -z "$HEALTH_URL" ]; then
+            echo "Skipping keep-warm ping: set PRANA_HEALTH_URL repository secret after deploying."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 10 -I "$HEALTH_URL" || curl --fail --silent --show-error --max-time 10 "$HEALTH_URL"
