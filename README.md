@@ -57,7 +57,7 @@ flowchart LR
 
 ## Exact Deterministic Mathematical Formulas
 
-All formulas and coefficients are externalized in [`backend/data/constants.json`](backend/data/constants.json) and computed in [`backend/engine.py`](backend/engine.py):
+All formulas and coefficients are externalized in [`backend/data/constants.json`](backend/data/constants.json) and computed in [`backend/air_quality.py`](backend/air_quality.py), [`backend/exposure.py`](backend/exposure.py), and [`backend/indoor.py`](backend/indoor.py) via the [`backend/engine.py`](backend/engine.py) façade:
 
 ### 1. Estimated Hourly India CPCB NAQI Sub-Index (`compute_cpcb_subindex`, `compute_hourly_naqi`)
 
@@ -118,8 +118,8 @@ $$
 
 ```bash
 python -m pip install -r backend/requirements-dev.txt
-# Copy .env.example to .env and set optional keys/CORS:
-#   GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, GEMINI_API_KEYS (comma-separated), ALLOWED_ORIGINS
+# Copy .env.example to .env and set optional keys/CORS/secret:
+#   GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, GEMINI_API_KEYS (comma-separated), PRANA_BUNDLE_SECRET, ALLOWED_ORIGINS
 python -m uvicorn main:app --app-dir backend --reload --port 8000
 ```
 
@@ -139,7 +139,7 @@ npm install
 npm run dev      # http://localhost:5173 (proxies /api -> 127.0.0.1:8000)
 npm run lint     # ESLint + jsx-a11y accessibility audit
 npm run test     # Vitest + React Testing Library suite
-npm run build    # Production bundle + PWA manifest & service worker in frontend/dist/
+npm run build    # Production bundle + PWA manifest, service worker & robots.txt in frontend/dist/
 ```
 
 ---
@@ -149,7 +149,7 @@ npm run build    # Production bundle + PWA manifest & service worker in frontend
 - **Gemini SDK Server Deadline Error & November 2026 Model Failover:** Passing `HttpOptions` timeouts under 10s to `google-genai` triggers server deadline validation errors, and newer Google AI Studio keys return `404 NOT_FOUND` on retired `gemini-2.0-flash` and restricted `gemini-2.5-flash*` endpoints (redirecting to `gemini-3.5-flash-lite` / `gemini-3.8-flash`). Resolved via pooled `genai.Client` instances with `HttpOptions(timeout=10_000)` (`10s` SDK HTTP timeout), an `8.0s` per-call `asyncio.wait_for` cap, prioritized 3.x + legacy failover `("gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")` with 600s `404` caching, and 45s `429` key rotation.
 - **Category Threshold Blindness & Multi-Hour Dosimetry:** Switching between `Students & Kids`, `Seniors`, `Delivery Riders`, and `Adults` initially looked too uniform on `Moderate` days and undercounted multi-hour shift changes; fixed with distinct physiology thresholds (`Est. NAQI > 100` for sensitive/outdoor-shift profiles vs `> 150` for Adults) and hourly-integrated dosimetry across 4h–8h shifts.
 - **Single-Pass Stream Read & Request Race Conditions:** Rewrote `auditRoomPhoto` to read error/success response bodies once via `res.text()`, added `AbortController` + request sequence guards to debounced What-If sliders, and added Starlette `StripApiPrefixMiddleware` so both `/v1/*` and `/api/v1/*` work cleanly across local proxy and Vercel serverless routing.
-- **Built with Google Antigravity:** Used Google Antigravity across backend/frontend modular refactoring, systematic failure injection (`404/429/503/504` mocks), WCAG AA accessibility fixes, Vitest + ESLint + Ruff + Mypy CI automation, and continuous build verification.
+- **Built with Google Antigravity:** Used Google Antigravity across backend/frontend modular refactoring, systematic failure injection (`404/429/503/504` mocks), WAI-ARIA keyboard & contrast accessibility fixes, Vitest + ESLint + Ruff + Mypy CI automation, and continuous build verification.
 
 ---
 
@@ -163,7 +163,7 @@ The app was built with Google Antigravity, and Gemini is guided by two system pr
 
 ### 2. Room photo audit (`VISION_SYSTEM_PROMPT`)
 
-"You are PRANA-AI, an indoor air quality specialist helping Indian families lower indoor PM2.5 at low cost (Rs 0 to Rs 500)." The prompt asks Gemini Vision to inspect the uploaded room or kitchen photo for ventilation and dust issues (window and door gaps, kitchen exhaust fan placement, soft dust traps) and return strict JSON only with exactly 3 tips costing Rs 0 to Rs 500, each with a short title, a specific step, and a simple reason. It also forbids houseplant recommendations and invented sensor numbers.
+"You are PRANA-AI, an indoor air quality specialist helping families lower indoor PM2.5 at low cost (Rs 0 to Rs 500)." The prompt asks Gemini Vision to inspect the uploaded room or kitchen photo for ventilation and dust issues (window and door gaps, kitchen exhaust fan placement, soft dust traps) and return strict JSON only with exactly 3 tips costing Rs 0 to Rs 500, each with a short title, a specific step, and a simple reason. It also forbids houseplant recommendations and invented sensor numbers.
 
 ---
 
