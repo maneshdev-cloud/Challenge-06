@@ -1,4 +1,3 @@
-import React from "react";
 import {
   Activity,
   AlertCircle,
@@ -46,7 +45,7 @@ export default function IndoorSanctuaryCard({
     {
       title: highSmog ? "Pause Heavy Cardio Today" : "Watch Breathing Intensity",
       detail: highSmog
-        ? `AQI is ${currentNaqi} (${currentCategory})—avoid intense HIIT or vigorous cardio indoors/outdoors today because heavy breathing pulls 3-4x more fine dust.`
+        ? `Est. AQI is ${currentNaqi} (${currentCategory}) — avoid intense HIIT or vigorous cardio indoors/outdoors today because heavy breathing pulls 3-4x more fine dust.`
         : "Keep intense cardio moderate indoors when windows are shut; shift outdoor runs to the lower-exposure slot.",
       Icon: HeartPulse,
       highlight: highSmog
@@ -60,7 +59,7 @@ export default function IndoorSanctuaryCard({
           <h2 className="text-lg font-extrabold text-slate-900">
             Safest Room &amp; Home Air Plan
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-600">
             Zero-cost kitchen, mopping, and window habits to keep indoor dust low.
           </p>
         </div>
@@ -70,7 +69,7 @@ export default function IndoorSanctuaryCard({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700 text-white shadow-sm">
-                <Home className="h-5 w-5" />
+                <Home className="h-5 w-5" aria-hidden="true" />
               </div>
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-wide text-teal-800">
@@ -88,26 +87,37 @@ export default function IndoorSanctuaryCard({
 
           <div className="mt-3.5 space-y-2">
             {sanctuaryPlan.room_scores.map((rm) => (
-              <div key={rm.name} className="rounded-xl bg-white/95 px-3.5 py-2.5 text-xs ring-1 ring-slate-200/70">
+              <div
+                key={rm.name}
+                className="rounded-xl bg-white/95 px-3.5 py-2.5 text-xs ring-1 ring-slate-200/70"
+              >
                 <div className="flex items-center justify-between font-bold text-slate-800">
                   <span className="flex items-center gap-2">
                     {rm.name}
                     {rm.is_sanctuary && (
-                      <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-800">
+                      <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-900">
                         Safest
                       </span>
                     )}
                   </span>
                   <span className="font-mono tabular-nums">{rm.score}/100</span>
                 </div>
-                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                <div
+                  role="progressbar"
+                  aria-label={`${rm.name} sanctuary safety score`}
+                  aria-valuenow={rm.score}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200"
+                >
                   <div
-                    className={`h-full rounded-full transition-all duration-300 ${rm.is_sanctuary ? "bg-teal-600" : "bg-slate-400"
-                      }`}
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      rm.is_sanctuary ? "bg-teal-600" : "bg-slate-500"
+                    }`}
                     style={{ width: `${Math.max(10, Math.min(100, rm.score))}%` }}
                   />
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">{rm.reason}</p>
+                <p className="mt-1 text-[11px] text-slate-600">{rm.reason}</p>
               </div>
             ))}
           </div>
@@ -117,16 +127,16 @@ export default function IndoorSanctuaryCard({
         <div className="mt-4 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200/70">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
-              <DoorOpen className="h-4 w-4 text-teal-700" />
+              <DoorOpen className="h-4 w-4 text-teal-700" aria-hidden="true" />
               <span>
                 {wa.action === "timed_open"
-                  ? `Open Windows 20 Min (${formatHourAmPm(wa.open_window_start_hour)} – ${formatHourAmPm(
-                    wa.open_window_end_hour
-                  )})`
+                  ? `Open Windows (${formatHourAmPm(wa.open_window_start_hour)} – ${formatHourAmPm(
+                      wa.open_window_end_hour
+                    )})`
                   : "Keep Street Windows Shut + Exhaust Kitchen Smoke"}
               </span>
             </div>
-            <span className="font-mono text-[11px] text-slate-500">
+            <span className="font-mono text-[11px] text-slate-600">
               Out min {wa.outdoor_min_pm25} vs In ~{wa.modeled_indoor_baseline_pm25} ug/m3
             </span>
           </div>
@@ -141,7 +151,7 @@ export default function IndoorSanctuaryCard({
                 key={i}
                 className="flex items-start gap-2 rounded-2xl bg-amber-50 px-3.5 py-2.5 text-xs font-medium text-amber-950 ring-1 ring-amber-200"
               >
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
                 <span>{alert}</span>
               </div>
             ))}
@@ -150,7 +160,7 @@ export default function IndoorSanctuaryCard({
 
         {/* Budget-Tiered Home Checklist */}
         <div className="mt-5">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
             Practical Home Actions (Free Habits First)
           </h3>
           <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -162,16 +172,17 @@ export default function IndoorSanctuaryCard({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-slate-900">{hack.title}</span>
                   <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${hack.max_cost_inr === 0
-                        ? "bg-emerald-100 text-emerald-800"
-                        : "bg-sky-100 text-sky-800"
-                      }`}
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      hack.max_cost_inr === 0
+                        ? "bg-emerald-100 text-emerald-900"
+                        : "bg-sky-100 text-sky-900"
+                    }`}
                   >
                     {hack.tier}
                   </span>
                 </div>
                 <p className="mt-1.5 text-xs leading-relaxed text-slate-700">{hack.action}</p>
-                <p className="mt-1.5 text-[11px] font-semibold text-teal-700">{hack.impact_note}</p>
+                <p className="mt-1.5 text-[11px] font-semibold text-teal-800">{hack.impact_note}</p>
               </div>
             ))}
           </div>
@@ -180,13 +191,13 @@ export default function IndoorSanctuaryCard({
         {/* Safety Notes */}
         <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div className="flex items-start gap-2 rounded-2xl bg-slate-100 px-3.5 py-2.5 text-[11px] text-slate-700">
-            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" />
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" aria-hidden="true" />
             <span>
               <strong>Fresh Air Safety:</strong> {sanctuaryPlan.co2_safety_note}
             </span>
           </div>
           <div className="flex items-start gap-2 rounded-2xl bg-slate-100 px-3.5 py-2.5 text-[11px] text-slate-700">
-            <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" />
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" aria-hidden="true" />
             <span>
               <strong>Myth Check:</strong> {sanctuaryPlan.no_houseplants_note}
             </span>
@@ -213,8 +224,9 @@ export default function IndoorSanctuaryCard({
             </p>
           </div>
           <span
-            className={`rounded-full px-3 py-1 text-[11px] font-bold ${highSmog ? "bg-rose-100 text-rose-900" : "bg-teal-100 text-teal-900"
-              }`}
+            className={`rounded-full px-3 py-1 text-[11px] font-bold ${
+              highSmog ? "bg-rose-100 text-rose-900" : "bg-teal-100 text-teal-900"
+            }`}
           >
             {highSmog ? "Low-Intensity Recommended" : "Light Indoor Wellness"}
           </span>
@@ -224,17 +236,17 @@ export default function IndoorSanctuaryCard({
           {wellnessTips.map(({ title, detail, Icon, highlight }) => (
             <div
               key={title}
-              className={`rounded-2xl p-3.5 ring-1 transition ${highlight
-                  ? "bg-rose-50/80 ring-rose-200"
-                  : "bg-white/90 ring-slate-200/70"
-                }`}
+              className={`rounded-2xl p-3.5 ring-1 transition ${
+                highlight ? "bg-rose-50/80 ring-rose-200" : "bg-white/90 ring-slate-200/70"
+              }`}
             >
               <div className="flex items-center gap-2">
                 <div
-                  className={`flex h-7 w-7 items-center justify-center rounded-lg ${highlight ? "bg-rose-100 text-rose-700" : "bg-teal-50 text-teal-700"
-                    }`}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg ${
+                    highlight ? "bg-rose-100 text-rose-700" : "bg-teal-50 text-teal-700"
+                  }`}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-4 w-4" aria-hidden="true" />
                 </div>
                 <span className="text-xs font-bold text-slate-900">{title}</span>
               </div>

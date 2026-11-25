@@ -1,5 +1,70 @@
 {
   "app_name": "PRANA-AI",
+  "engine_params": {
+    "golden_window_min_reduction_pct": 15.0,
+    "infiltration_rs_0": 0.50,
+    "infiltration_sealed": 0.28,
+    "cooking_spike_pm25_ug_m3": 220.0,
+    "window_flush_max_outdoor_pm25": 60.0,
+    "window_moderate_cap_pm25": 90.0,
+    "phone_charge_co2_g": 8.2,
+    "roadside_plume_multiplier": 1.55,
+    "mask_thresholds_pm25": {
+      "work_shift_n95": 20.0,
+      "sensitive_n95": 40.0,
+      "general_n95": 60.0,
+      "midday_flexible_n95": 90.0
+    },
+    "age_cutoffs": {
+      "sensitive_child_max": 12,
+      "student_kid_max": 22,
+      "senior_profile_min": 60,
+      "sensitive_elderly_min": 65
+    },
+    "category_warning_thresholds_naqi": {
+      "students_kids": 100,
+      "seniors": 100,
+      "delivery_riders": 100,
+      "adults_commuters": 150
+    }
+  },
+  "source_registry": {
+    "cpcb_naqi_breakpoints": {
+      "source": "Central Pollution Control Board (CPCB) National Air Quality Index Technical Report (2014)",
+      "units": "ug/m3 for PM2.5, PM10, NO2",
+      "assumption_note": "Official CPCB bulletins use 24h running averages; PRANA-AI applies CPCB breakpoints to hourly CAMS forecast steps as an Estimated Hourly India AQI so diurnal peaks remain visible."
+    },
+    "usepa_ventilation_m3_hr": {
+      "source": "US EPA Exposure Factors Handbook (Chapter 6 — Inhalation Rates)",
+      "units": "m3/hour",
+      "assumption_note": "Population-mean inhalation rates across sleep, seated, light/brisk walk, child play, elderly walking, and strenuous outdoor work."
+    },
+    "microenv_multipliers": {
+      "source": "Delhi/Indian roadside & microenvironmental PM2.5 penetration studies (Apte et al.; IIT Delhi)",
+      "units": "dimensionless ratio vs ambient background PM2.5",
+      "assumption_note": "2-wheeler/auto open road ~1.55x background plume; sealed room with weatherstripping/HEPA ~0.28x."
+    },
+    "mask_filtration_efficiency": {
+      "source": "NIOSH / peer-reviewed real-world fit-factor studies for cloth, surgical, and N95/FFP2 respirators",
+      "units": "fractional fractional reduction (0.0 to 1.0)",
+      "assumption_note": "Assumes snug nose-clip fit (~80% real-world effective N95 filtration vs ~95% lab filter media)."
+    },
+    "arai_transport_emissions": {
+      "source": "ARAI / WRI India Sustainable Mobility & Emission Factor Compendium (per-passenger-km estimates)",
+      "units": "g CO2e/pkm and mg tailpipe PM2.5/pkm",
+      "assumption_note": "Mode averages; real occupancy, AC load, and congestion idling shift per-trip totals."
+    },
+    "berkeley_earth_cig_ug": {
+      "source": "Berkeley Earth particulate equivalence (~22 ug/m3 24h ambient at ~15 m3/day ≈ 330 ug/day = 1 cigarette)",
+      "units": "ug PM2.5 per cigarette equivalent",
+      "assumption_note": "Risk communication proxy only—not a toxicological equivalence."
+    },
+    "indoor_infiltration_and_cooking": {
+      "source": "Modeled residential infiltration & Indian tadka/frying peak literature (heuristic benchmark)",
+      "units": "infiltration factor & +220 ug/m3 post-cooking heuristic spike",
+      "assumption_note": "Heuristic room proxy (not a laser PM2.5 monitor reading); assumes closed-door kitchen exhaust reduces spread."
+    }
+  },
   "cities": {
     "mumbai": {
       "name": "Mumbai",
@@ -176,5 +241,126 @@
       "action": "Strap a square MERV-13/HEPA replacement filter (Rs 900) to the intake of a thermally protected box fan (Rs 1,200) inside the Sanctuary Room.",
       "impact_note": "Delivers ~65-70% of the clean air delivery of a Rs 15,000 commercial purifier. Never place near open flames."
     }
-  ]
+  ],
+  "deterministic_plan_templates": {
+    "hi": {
+      "stale_prefix": "नोट: अभी लाइव डेटा उपलब्ध नहीं है; यह ऐतिहासिक रीप्ले (historical replay) दिखाया जा रहा है।\n\n",
+      "air_heading": "आज की हवा:",
+      "do_heading": "यह करें:",
+      "avoid_heading": "इससे बचें:",
+      "air_line_window": "{loc_label} में आज PM2.5 {current_pm25} ug/m3 और अनुमानित India NAQI {current_naqi} ({current_category}) है; बाहर जाने का कम-प्रदूषण वाला समय {window_label} ({mean_pm25} ug/m3) है।",
+      "air_line_flat": "{loc_label} में आज पूरे दिन प्रदूषण ज़्यादा है (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} में भी हवा {mean_pm25} ug/m3 रहती है, इसलिए कठिन व्यायाम घर के अंदर रखें।",
+      "do_bullets": [
+        "टहलना या बाहरी काम {window_label} में रखें (अनुमानित {dose_avoided_ug} ug कम PM2.5) और सफर में N95 मास्क पहनें।",
+        "घर में '{sanctuary_room}' का उपयोग करें और तड़का लगाते समय रसोई का दरवाज़ा बंद रखकर exhaust 15 मिनट चलाएं।",
+        "{target_mode_label} से {co2_saved_g} g CO2e और {tailpipe_pm25_saved_mg} mg टेलपाइप PM2.5 बचाएं।"
+      ],
+      "avoid_bullets": [
+        "सुबह के भारी धुंध वाले समय ({morning_peak_pm25} ug/m3) में तेज़ कसरत न करें।",
+        "सूखी झाड़ू (jhadu), अगरबत्ती/कॉइल न जलाएं और रात में कमरा पूरी तरह बंद न करें (अंदरूनी दरवाज़ा थोड़ा खुला रखें)।"
+      ]
+    },
+    "mr": {
+      "stale_prefix": "टीप: सध्या लाइव्ह डेटा उपलब्ध नाही; ऐतिहासिक रिप्ले (historical replay) दाखवला जात आहे.\n\n",
+      "air_heading": "आजची हवा:",
+      "do_heading": "हे करा:",
+      "avoid_heading": "हे टाळा:",
+      "air_line_window": "{loc_label} मध्ये PM2.5 {current_pm25} ug/m3 आणि अंदाजे India NAQI {current_naqi} ({current_category}) आहे; बाहेर जाण्यासाठी कमी-प्रदूषण वेळ {window_label} ({mean_pm25} ug/m3) आहे.",
+      "air_line_flat": "{loc_label} मध्ये आज दिवसभर हवा प्रदूषित आहे (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} लाही {mean_pm25} ug/m3 असल्याने जड व्यायाम घरातच करा.",
+      "do_bullets": [
+        "फिरणे किंवा कामे {window_label} दरम्यान करा ({dose_avoided_ug} ug कमी PM2.5) आणि प्रवासात N95 मास्क वापरा.",
+        "घरात '{sanctuary_room}' खोली वापरा आणि फोडणी देताना स्वयंपाकघराचे दार बंद ठेवून exhaust 15 मिनिटे चालवा.",
+        "{target_mode_label} वापरून {co2_saved_g} g CO2e आणि {tailpipe_pm25_saved_mg} mg टेलपाइप PM2.5 वाचवा."
+      ],
+      "avoid_bullets": [
+        "सकाळच्या जास्त धुराच्या वेळेत ({morning_peak_pm25} ug/m3) कठीण व्यायाम करू नका.",
+        "कोरडी झाडू, अगरबत्ती/कॉइल टाळा आणि रात्री खोली पूर्ण हवाबंद ठेवू नका (आतील दार किंचित उघडे ठेवा)."
+      ]
+    },
+    "kn": {
+      "stale_prefix": "ಸೂಚನೆ: ಪ್ರಸ್ತುತ ಲೈವ್ ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ; ಹಿಂದಿನ ಮಾದರಿ ಡೇಟಾ (historical replay) ತೋರಿಸಲಾಗುತ್ತಿದೆ.\n\n",
+      "air_heading": "ಇಂದಿನ ಗಾಳಿ:",
+      "do_heading": "ಇದನ್ನು ಮಾಡಿ:",
+      "avoid_heading": "ಇದನ್ನು ತಪ್ಪಿಸಿ:",
+      "air_line_window": "{loc_label} ನಲ್ಲಿ PM2.5 {current_pm25} ug/m3 ಮತ್ತು ಅಂದಾಜು India NAQI {current_naqi} ({current_category}) ಇದೆ; ಹೊರಗೆ ಹೋಗಲು ಕಡಿಮೆ-ಮಾಲಿನ್ಯ ಸಮಯ {window_label} ({mean_pm25} ug/m3).",
+      "air_line_flat": "{loc_label} ನಲ್ಲಿ ಇಂದು ದಿನವಿಡೀ ಗಾಳಿ ಮಲಿನವಾಗಿದೆ (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} ನಲ್ಲೂ {mean_pm25} ug/m3 ಇರುವುದರಿಂದ ಭಾರೀ ವ್ಯಾಯಾಮ ಮನೆಯೊಳಗಿರಲಿ.",
+      "do_bullets": [
+        "ನಡಿಗೆ ಅಥವಾ ಹೊರಗಿನ ಕೆಲಸವನ್ನು {window_label} ಗೆ ಬದಲಾಯಿಸಿ ({dose_avoided_ug} ug ಕಡಿಮೆ PM2.5) ಮತ್ತು ಪ್ರಯಾಣದಲ್ಲಿ N95 ಮಾಸ್ಕ್ ಧರಿಸಿ.",
+        "ಮನೆಯಲ್ಲಿ '{sanctuary_room}' ಬಳಸಿ ಹಾಗೂ ಒಗ್ಗರಣೆ ವೇಳೆ ಅಡುಗೆಮನೆ ಬಾಗಿಲು ಮುಚ್ಚಿ exhaust 15 ನಿಮಿಷ ಚಾಲನೆ ಮಾಡಿ.",
+        "{target_mode_label} ಬಳಸಿ {co2_saved_g} g CO2e ಮತ್ತು {tailpipe_pm25_saved_mg} mg ಟೈಲ್‌ಪೈಪ್ PM2.5 ಉಳಿಸಿ."
+      ],
+      "avoid_bullets": [
+        "ಬೆಳಗಿನ ಹೆಚ್ಚಿನ ಮಾಲಿನ್ಯ ಸಮಯದಲ್ಲಿ ({morning_peak_pm25} ug/m3) ಭಾರೀ ವ್ಯಾಯಾಮ ಬೇಡ.",
+        "ಒಣ ಗುಡಿಸುವಿಕೆ, ಅಗರಬತ್ತಿ/ಕಾಯಿಲ್ ತಪ್ಪಿಸಿ ಹಾಗೂ ರಾತ್ರಿ ಕೋಣೆಯನ್ನು ಸಂಪೂರ್ಣವಾಗಿ ಮುಚ್ಚಬೇಡಿ."
+      ]
+    },
+    "bn": {
+      "stale_prefix": "নোট: বর্তমানে লাইভ ডেটা উপলব্ধ নয়; ঐতিহাসিক রিপ্লে (historical replay) দেখানো হচ্ছে।\n\n",
+      "air_heading": "আজকের বাতাস:",
+      "do_heading": "যা করবেন:",
+      "avoid_heading": "যা এড়িয়ে চলবেন:",
+      "air_line_window": "{loc_label}-এ PM2.5 {current_pm25} ug/m3 এবং আনুমানিক India NAQI {current_naqi} ({current_category}); বাইরে যাওয়ার তুলনামূলক কম-দূষণের সময় {window_label} ({mean_pm25} ug/m3)।",
+      "air_line_flat": "{loc_label}-এ আজ সারাদিন দূষণ বেশি (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label}-এও {mean_pm25} ug/m3 থাকায় ভারী ব্যায়াম ঘরের ভিতরেই রাখুন।",
+      "do_bullets": [
+        "হাঁটা বা বাইরের কাজ {window_label}-এ রাখুন ({dose_avoided_ug} ug কম PM2.5) এবং রাস্তায় N95 মাস্ক পরুন।",
+        "ঘরের '{sanctuary_room}' ব্যবহার করুন ও রান্নায় ফোড়নের সময় দরজা বন্ধ রেখে exhaust 15 মিনিট চালান।",
+        "{target_mode_label} ব্যবহারে {co2_saved_g} g CO2e এবং {tailpipe_pm25_saved_mg} mg টেলপাইপ PM2.5 বাঁচান।"
+      ],
+      "avoid_bullets": [
+        "সকালের বেশি ধোঁয়ার সময় ({morning_peak_pm25} ug/m3) ভারী ব্যায়াম করবেন না।",
+        "শুকনো ঝাড়ু, ধূপ/কয়েল এড়িয়ে চলুন এবং রাতে ঘরের সব দরজা পুরো বন্ধ রাখবেন না।"
+      ]
+    },
+    "ta": {
+      "stale_prefix": "குறிப்பு: நேரலை தரவு தற்போது கிடைக்கவில்லை; வரலாற்று மாதிரி தரவு (historical replay) காட்டப்படுகிறது.\n\n",
+      "air_heading": "இன்றைய காற்று:",
+      "do_heading": "இதை செய்யுங்கள்:",
+      "avoid_heading": "இதை தவிர்க்கவும்:",
+      "air_line_window": "{loc_label} பகுதியில் PM2.5 {current_pm25} ug/m3 மற்றும் மதிப்பீட்டு India NAQI {current_naqi} ({current_category}); வெளியே செல்ல குறைந்த மாசு நேரம் {window_label} ({mean_pm25} ug/m3).",
+      "air_line_flat": "{loc_label} பகுதியில் இன்று நாள் முழுவதும் மாசு அதிகம் (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} நேரத்திலும் {mean_pm25} ug/m3 உள்ளதால் கடுமையான உடற்பயிற்சியை வீட்டிற்குள் செய்யுங்கள்.",
+      "do_bullets": [
+        "நடைப்பயிற்சி மற்றும் வெளி வேலைகளை {window_label}-க்கு மாற்றுங்கள் ({dose_avoided_ug} ug குறைந்த PM2.5) மற்றும் N95 முகக்கவசம் அணியுங்கள்.",
+        "வீட்டில் '{sanctuary_room}' அறையை பயன்படுத்துங்கள்; சமையல் தாளிப்பின் போது கதவை மூடி exhaust fan-ஐ 15 நிமிடம் இயக்குங்கள்.",
+        "{target_mode_label} மூலம் {co2_saved_g} g CO2e மற்றும் {tailpipe_pm25_saved_mg} mg tailpipe PM2.5 சேமியுங்கள்."
+      ],
+      "avoid_bullets": [
+        "காலை அதிக மாசு நேரத்தில் ({morning_peak_pm25} ug/m3) கடுமையான உடற்பயிற்சி வேண்டாம்.",
+        "உலர்ந்த துடைப்பு, ஊதுபத்தி/கொசுவத்தி தவிர்த்து இரவில் உள் கதவை சிறிது திறந்து வையுங்கள்."
+      ]
+    },
+    "te": {
+      "stale_prefix": "గమనిక: ప్రస్తుతం లైవ్ డేటా అందుబాటులో లేదు; చారిత్రక రీప్లే (historical replay) చూపబడుతోంది.\n\n",
+      "air_heading": "నేటి గాలి:",
+      "do_heading": "ఇవి చేయండి:",
+      "avoid_heading": "ఇవి మానండి:",
+      "air_line_window": "{loc_label} లో PM2.5 {current_pm25} ug/m3 మరియు అంచనా India NAQI {current_naqi} ({current_category}) ఉంది; బయటకు వెళ్లడానికి తక్కువ కాలుష్య సమయం {window_label} ({mean_pm25} ug/m3).",
+      "air_line_flat": "{loc_label} లో ఈరోజు రోజంతా కాలుష్యం ఎక్కువగా ఉంది (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} లో కూడా {mean_pm25} ug/m3 ఉన్నందున కఠిన వ్యాయామం ఇంట్లోనే చేయండి.",
+      "do_bullets": [
+        "నడక మరియు బయటి పనులను {window_label} లో చేయండి ({dose_avoided_ug} ug తక్కువ PM2.5) మరియు ప్రయాణంలో N95 మాస్క్ వాడండి.",
+        "ఇంట్లో '{sanctuary_room}' ను వాడండి; పోపు వేసేటప్పుడు వంటగది తలుపు మూసి exhaust fan 15 నిమిషాలు నడపండి.",
+        "{target_mode_label} ద్వారా {co2_saved_g} g CO2e మరియు {tailpipe_pm25_saved_mg} mg tailpipe PM2.5 ఆదా చేయండి."
+      ],
+      "avoid_bullets": [
+        "ఉదయం ఎక్కువ కాలుష్య సమయంలో ({morning_peak_pm25} ug/m3) కఠినమైన వ్యాయామం చేయకండి.",
+        "పొడి చీపురు, అగరుబత్తి/కాయిల్స్ వాడకండి మరియు రాత్రి గదిని పూర్తిగా మూసివేయకండి."
+      ]
+    },
+    "hinglish": {
+      "stale_prefix": "Note: Abhi live data available nahi hai; yeh historical replay dikhaya ja raha hai.\n\n",
+      "air_heading": "Today's Air:",
+      "do_heading": "Do This:",
+      "avoid_heading": "Avoid This:",
+      "air_line_window": "{loc_label} mein abhi PM2.5 {current_pm25} ug/m3 aur estimated India NAQI {current_naqi} ({current_category}) hai; bahar jaane ka lower-exposure slot {window_label} ({mean_pm25} ug/m3) hai.",
+      "air_line_flat": "{loc_label} mein aaj poore din pollution elevated hai (PM2.5 {current_pm25} ug/m3, NAQI {current_naqi}); {window_label} mein bhi {mean_pm25} ug/m3 rehta hai, isliye heavy exercise ghar ke andar rakhein.",
+      "do_bullets": [
+        "Walk aur errands ko {window_label} mein rakhein ({dose_avoided_ug} ug kam PM2.5) aur commute par fitted N95 pehnein.",
+        "Ghar mein '{sanctuary_room}' use karein aur tadka lagate waqt kitchen door band karke exhaust 15 min chalayein.",
+        "{target_mode_label} se {co2_saved_g} g CO2e aur {tailpipe_pm25_saved_mg} mg tailpipe PM2.5 save karein."
+      ],
+      "avoid_bullets": [
+        "Subah peak smog ({morning_peak_pm25} ug/m3) mein heavy jog ya outdoor cardio na karein.",
+        "Dry jhadu, agarbatti/mosquito coils avoid karein aur raat ko bedroom bilkul airtight na rakhein."
+      ]
+    }
+  }
 }

@@ -1,22 +1,21 @@
-import React from "react";
 import { CalendarDays, Clock } from "lucide-react";
 
 function getTrafficLightStyle(naqi) {
   if (naqi <= 100) {
     return {
       card: "bg-gradient-to-b from-emerald-50 to-emerald-50/40 ring-emerald-300",
-      pill: "bg-emerald-600 text-white"
+      pill: "bg-emerald-700 text-white"
     };
   }
   if (naqi <= 200) {
     return {
       card: "bg-gradient-to-b from-yellow-50 to-amber-50/50 ring-yellow-400",
-      pill: "bg-yellow-400 text-slate-950"
+      pill: "bg-amber-700 text-white"
     };
   }
   return {
     card: "bg-gradient-to-b from-rose-50 to-red-50/60 ring-red-300",
-    pill: "bg-red-600 text-white"
+    pill: "bg-red-700 text-white"
   };
 }
 
@@ -28,10 +27,10 @@ export default function FiveDayOutlookCard({ dailyOutlook }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-extrabold text-slate-900">
-            <CalendarDays className="h-5 w-5 text-teal-700" />
+            <CalendarDays className="h-5 w-5 text-teal-700" aria-hidden="true" />
             Next 5 Days Outlook
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-600">
             Plan errands, school runs, and outdoor workouts across the week.
           </p>
         </div>
@@ -57,12 +56,12 @@ export default function FiveDayOutlookCard({ dailyOutlook }) {
                 </div>
 
                 <p className="mt-2 font-mono text-xs font-bold tabular-nums text-slate-800">
-                  Peak AQI {day.peak_naqi}{" "}
+                  Peak Est. AQI {day.peak_naqi}{" "}
                   <span className="font-normal text-slate-600">({day.peak_pm25} ug/m3)</span>
                 </p>
 
                 <div className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-slate-800">
-                  <Clock className="h-3 w-3 shrink-0 text-teal-700" />
+                  <Clock className="h-3 w-3 shrink-0 text-teal-700" aria-hidden="true" />
                   <span className="truncate">Best: {day.best_window_label}</span>
                 </div>
               </div>

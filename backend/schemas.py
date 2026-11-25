@@ -3,24 +3,49 @@
 from __future__ import annotations
 
 from typing import Literal
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 LanguageCode = Literal["en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"]
 FlexibilityType = Literal["fixed", "flexible"]
 BudgetTier = Literal["rs_0", "under_500", "under_2200"]
 MaskType = Literal["none", "cloth", "surgical", "n95"]
+UserCategory = Literal["students_kids", "adults_commuters", "seniors", "delivery_riders"]
+ActivityLevel = Literal[
+    "sleep",
+    "seated",
+    "light_walk",
+    "brisk_walk",
+    "child_play",
+    "elderly_walk",
+    "running_or_outdoor_work",
+]
+CommuteMode = Literal[
+    "car_petrol_solo",
+    "car_diesel_solo",
+    "carpool_3p",
+    "two_wheeler_petrol",
+    "auto_cng",
+    "city_bus",
+    "electric_metro",
+    "walk_or_cycle",
+]
 
 
 class HouseholdMember(BaseModel):
     """Represents a household member and their respiratory vulnerability profile."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., min_length=1, max_length=60)
     age: int = Field(..., ge=0, le=110)
-    conditions: list[str] = Field(default_factory=list)
+    conditions: list[str] = Field(default_factory=list, max_length=10)
 
 
 class RoomSpec(BaseModel):
     """Physical characteristics of a room used for Clean Air Sanctuary scoring."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., min_length=1, max_length=60)
     ext_windows: int = Field(default=1, ge=0, le=10)
@@ -32,13 +57,15 @@ class RoomSpec(BaseModel):
 class ActivityItem(BaseModel):
     """Daily household commitment marked as fixed or flexible."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(..., min_length=1, max_length=60)
     name: str = Field(..., min_length=1, max_length=100)
     flexibility: FlexibilityType
     planned_hour: int = Field(..., ge=0, le=23)
     duration_min: int = Field(..., ge=5, le=720)
-    activity_level: str = "light_walk"
-    member_name: str = "Household Member"
+    activity_level: ActivityLevel = "light_walk"
+    member_name: str = Field(default="Household Member", min_length=1, max_length=60)
     current_mask: MaskType = "none"
     is_commute: bool = False
     is_work_shift: bool = False
@@ -69,15 +96,18 @@ class DataProvenance(BaseModel):
     """Explicit source, freshness, and fallback provenance metadata."""
 
     source: str
-    data_type: Literal["model_forecast", "historical_replay"]
+    data_type: Literal["model_forecast", "partial_model_forecast", "historical_replay"]
     retrieved_at: str
     is_stale: bool
     is_fallback_replay: bool
+    is_partial_fallback: bool = False
+    fallback_slots: int = 0
+    spatial_resolution: str = "~40 km CAMS Global (3-hourly interpolated) + NWP Weather"
     spatial_note: str
 
 
 class GoldenWindow(BaseModel):
-    """Lowest-exposure daytime 2-hour window derived from live hourly PM2.5."""
+    """Lowest-exposure daytime 2-hour window derived from hourly forecast PM2.5."""
 
     start_hour: int
     end_hour: int
@@ -126,11 +156,13 @@ class DailyAirOutlook(BaseModel):
     peak_category: str
     best_window_label: str
     best_window_pm25: float
+    reduction_pct: float = 0.0
+    has_meaningful_window: bool = True
     tip: str
 
 
 class AirSnapshotResponse(BaseModel):
-    """Full 24-hour atmospheric snapshot, CPCB NAQI summary, and 5-day outlook."""
+    """Full 24-hour atmospheric snapshot, estimated hourly AQI summary, and 5-day outlook."""
 
     city: str
     city_name: str
@@ -157,27 +189,29 @@ class AirSnapshotResponse(BaseModel):
 class PlanRequest(BaseModel):
     """Household profile and daily routine input for deterministic planning."""
 
-    city: str = "delhi"
+    model_config = ConfigDict(extra="ignore")
+
+    city: str = Field(default="delhi", min_length=1, max_length=100)
     area_name: str | None = Field(default=None, max_length=80)
     state: str | None = Field(default=None, max_length=80)
     lat: float | None = Field(default=None, ge=-90.0, le=90.0)
     lon: float | None = Field(default=None, ge=-180.0, le=180.0)
-    preset_id: str | None = None
-    user_category: Literal["students_kids", "adults_commuters", "seniors", "delivery_riders"] | None = None
+    preset_id: str | None = Field(default=None, max_length=60)
+    user_category: UserCategory | None = None
     language: LanguageCode = "en"
     budget_tier: BudgetTier = "under_2200"
-    commute_mode: str = "car_petrol_solo"
-    target_commute_mode: str = "electric_metro"
+    commute_mode: CommuteMode = "car_petrol_solo"
+    target_commute_mode: CommuteMode = "electric_metro"
     commute_km: float = Field(default=16.0, ge=0.0, le=200.0)
     uses_agarbatti_or_coils: bool = False
     dry_sweeps: bool = True
-    members: list[HouseholdMember] = Field(default_factory=list)
-    rooms: list[RoomSpec] = Field(default_factory=list)
-    activities: list[ActivityItem] = Field(default_factory=list)
+    members: list[HouseholdMember] = Field(default_factory=list, max_length=20)
+    rooms: list[RoomSpec] = Field(default_factory=list, max_length=20)
+    activities: list[ActivityItem] = Field(default_factory=list, max_length=40)
     walk_override_hour: int | None = Field(default=None, ge=0, le=23)
     simulate_stale: bool = False
     skip_llm: bool = False
-    symptom_notes: str | None = None
+    symptom_notes: str | None = Field(default=None, max_length=500)
 
 
 class RoutineItemResult(BaseModel):
@@ -237,7 +271,7 @@ class SanctuaryPlan(BaseModel):
     window_advice: WindowVentilationAdvice
     co2_safety_note: str
     no_houseplants_note: str
-    applicable_hacks: list[dict]
+    applicable_hacks: list[dict[str, object]]
     personalized_alerts: list[str]
 
 
@@ -275,7 +309,7 @@ class EmitLessLedger(BaseModel):
 class ProfileRiskSummary(BaseModel):
     """Physiology-aware lung capacity, sensitivity tier, and category-specific NAQI warning."""
 
-    profile_key: Literal["students_kids", "adults_commuters", "seniors", "delivery_riders"]
+    profile_key: UserCategory
     profile_label: str
     sensitivity_tier: str
     warning_threshold_naqi: int = 150
@@ -289,8 +323,25 @@ class ProfileRiskSummary(BaseModel):
     physiology_note: str
 
 
+class GroundedMetrics(BaseModel):
+    """Category-scoped numeric allowlist for strict unit validation in safety.py."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pm25: list[float] = Field(default_factory=list)
+    naqi: list[float] = Field(default_factory=list)
+    dose_ug: list[float] = Field(default_factory=list)
+    cigarettes: list[float] = Field(default_factory=list)
+    co2_g: list[float] = Field(default_factory=list)
+    co2_kg: list[float] = Field(default_factory=list)
+    tailpipe_mg: list[float] = Field(default_factory=list)
+    pct: list[float] = Field(default_factory=list)
+
+
 class EvidenceBundle(BaseModel):
     """Immutable deterministic truth object passed to the GenAI explainer."""
+
+    model_config = ConfigDict(frozen=True)
 
     app_name: str = "PRANA-AI"
     city: str
@@ -307,6 +358,7 @@ class EvidenceBundle(BaseModel):
     breathe_less: BreatheLessLedger
     emit_less: EmitLessLedger
     profile_summary: ProfileRiskSummary | None = None
+    grounded_metrics: GroundedMetrics = Field(default_factory=GroundedMetrics)
     grounded_numbers: list[float] = Field(default_factory=list)
 
 
@@ -321,6 +373,8 @@ class PlanResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     """Grounded multilingual Q&A request tied to an EvidenceBundle."""
+
+    model_config = ConfigDict(extra="forbid")
 
     message: str = Field(..., min_length=1, max_length=1500)
     evidence_bundle: EvidenceBundle

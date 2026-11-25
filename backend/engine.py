@@ -1,13 +1,12 @@
-"""Deterministic physics, CPCB NAQI, dosimetry, sanctuary, and ARAI emissions engine for PRANA-AI."""
+"""Deterministic CPCB breakpoints, dosimetry, sanctuary, and ARAI engine for PRANA-AI."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 
-from data_fetcher import CONSTANTS
+from data_fetcher import CONSTANTS, IST_TZ
 from schemas import (
-    ActivityItem,
     AirSnapshotResponse,
     BreatheLessLedger,
     DailyAirOutlook,
@@ -15,7 +14,9 @@ from schemas import (
     EmitLessLedger,
     EvidenceBundle,
     GoldenWindow,
+    GroundedMetrics,
     HourlyAirPoint,
+    LanguageCode,
     MaskType,
     PlanRequest,
     ProfileRiskSummary,
@@ -23,65 +24,136 @@ from schemas import (
     RoomSpec,
     RoutineItemResult,
     SanctuaryPlan,
+    UserCategory,
     WindowVentilationAdvice,
 )
 
-IST_TZ = timezone(timedelta(hours=5, minutes=30))
+ENGINE_PARAMS: dict[str, Any] = CONSTANTS["engine_params"]
 
 DEFAULT_ROOMS = [
-    RoomSpec(name="Front Living Room", ext_windows=2, road_facing=True, kitchen_adjacent=True, large_volume=True),
-    RoomSpec(name="Inner Bedroom", ext_windows=1, road_facing=False, kitchen_adjacent=False, large_volume=False),
+    RoomSpec(
+        name="Front Living Room",
+        ext_windows=2,
+        road_facing=True,
+        kitchen_adjacent=True,
+        large_volume=True,
+    ),
+    RoomSpec(
+        name="Inner Bedroom",
+        ext_windows=1,
+        road_facing=False,
+        kitchen_adjacent=False,
+        large_volume=False,
+    ),
 ]
 
 PRIMARY_FLEX_LEVELS = {"elderly_walk", "child_play", "running_or_outdoor_work", "brisk_walk"}
 
+PROFILE_DESCRIPTORS: dict[UserCategory, dict[str, Any]] = {
+    "delivery_riders": {
+        "label": "Delivery Riders (Road-Exhaust Shift)",
+        "tier": "Road Plume 1.55x + High Intake",
+        "severity_labels": (
+            "Severe Road Exposure",
+            "High Road Exposure",
+            "Elevated Route Vigilance",
+        ),
+        "badges": (
+            "High Exposure Alert (NAQI > 100)",
+            "Rider Warning (NAQI > 100)",
+            "Road Plume Active (1.55x)",
+        ),
+    },
+    "seniors": {
+        "label": "Seniors (High Lung Sensitivity)",
+        "tier": "Sensitive Airways (Threshold NAQI > 100)",
+        "severity_labels": (
+            "High Cardiorespiratory Risk",
+            "Elevated Senior Risk",
+            "Low Senior Risk",
+        ),
+        "badges": (
+            "Senior Health Alert (NAQI > 100)",
+            "Senior Warning (NAQI > 100)",
+            "Senior-Safe Threshold (<100)",
+        ),
+    },
+    "students_kids": {
+        "label": "Students & Kids (Developing Lungs)",
+        "tier": "Higher Uptake/kg (Threshold NAQI > 100)",
+        "severity_labels": ("High Youth Exposure", "Elevated Kid Risk", "Low Youth Risk"),
+        "badges": (
+            "School / Sports Alert (NAQI > 100)",
+            "Kids / Play Warning (NAQI > 100)",
+            "School-Play Friendly (<100)",
+        ),
+    },
+    "adults_commuters": {
+        "label": "Adults & Daily Commuters",
+        "tier": "Standard CPCB Band (Threshold NAQI > 150)",
+        "severity_labels": ("High Commuter Strain", "Elevated Commuter Risk", "Low Adult Risk"),
+        "badges": (
+            "Outdoor Warning (NAQI > 150)",
+            "Advisory Active (NAQI > 150)",
+            "Standard Threshold (<=150)",
+        ),
+    },
+}
 
-def compute_cpcb_subindex(concentration: float, breakpoints: list[dict[str, Any]]) -> tuple[int, str]:
-    """Compute a single-pollutant CPCB NAQI sub-index using continuous interval handling."""
+
+def _interpolate_linear(c_lo: float, c_hi: float, i_lo: float, i_hi: float, val: float) -> int:
+    """Linearly interpolate a sub-index within closed breakpoint bounds."""
+    if c_hi <= c_lo:
+        return int(round(i_hi))
+    sub = ((i_hi - i_lo) / (c_hi - c_lo)) * (val - c_lo) + i_lo
+    return int(round(sub))
+
+
+def compute_cpcb_subindex(
+    concentration: float, breakpoints: list[dict[str, Any]]
+) -> tuple[int, str]:
+    """Compute a single-pollutant CPCB sub-index using continuous interval handling."""
     c = max(0.0, float(concentration))
     last_bp = breakpoints[-1]
-    if c >= last_bp["c_hi"]:
-        return 500, last_bp["category"]
+    if c >= float(last_bp["c_hi"]):
+        return 500, str(last_bp["category"])
 
-    prev_bp: dict[str, Any] | None = None
+    prev_c_hi: float | None = None
+    prev_i_hi: float | None = None
     for bp in breakpoints:
         c_lo = float(bp["c_lo"])
         c_hi = float(bp["c_hi"])
         i_lo = float(bp["i_lo"])
         i_hi = float(bp["i_hi"])
 
-        if prev_bp is not None and float(prev_bp["c_hi"]) < c < c_lo:
-            # Smoothly bridge the integer step gap (e.g., 30 < 30.4 < 31) so floats never drop out.
-            span = c_lo - float(prev_bp["c_hi"])
-            sub = float(prev_bp["i_hi"]) + ((i_lo - float(prev_bp["i_hi"])) / span) * (c - float(prev_bp["c_hi"]))
-            return int(round(sub)), bp["category"]
+        if prev_c_hi is not None and prev_i_hi is not None and prev_c_hi < c < c_lo:
+            sub = _interpolate_linear(prev_c_hi, c_lo, prev_i_hi, i_lo, c)
+            return sub, str(bp["category"])
 
         if c_lo <= c <= c_hi:
-            if c_hi == c_lo:
-                return int(round(i_hi)), bp["category"]
-            sub = ((i_hi - i_lo) / (c_hi - c_lo)) * (c - c_lo) + i_lo
-            return int(round(sub)), bp["category"]
+            return _interpolate_linear(c_lo, c_hi, i_lo, i_hi, c), str(bp["category"])
 
-        prev_bp = bp
+        prev_c_hi = c_hi
+        prev_i_hi = i_hi
 
-    return 500, last_bp["category"]
+    return 500, str(last_bp["category"])
 
 
 def compute_pm25_naqi(pm25: float) -> tuple[int, str]:
-    """Compute CPCB PM2.5 sub-index and category."""
+    """Compute CPCB PM2.5 breakpoint sub-index and category."""
     return compute_cpcb_subindex(pm25, CONSTANTS["cpcb_pm25_breakpoints"])
 
 
 def category_for_naqi(naqi: int) -> str:
     """Return CPCB NAQI band category for an overall NAQI value."""
     for bp in CONSTANTS["cpcb_pm25_breakpoints"]:
-        if naqi <= bp["i_hi"]:
-            return bp["category"]
+        if naqi <= int(bp["i_hi"]):
+            return str(bp["category"])
     return "Severe"
 
 
 def compute_hourly_naqi(pm25: float, pm10: float, no2: float) -> dict[str, Any]:
-    """Compute CPCB sub-indices for PM2.5, PM10, NO2 and identify dominant pollutant."""
+    """Compute estimated hourly CPCB-breakpoint index across PM2.5, PM10, and NO2."""
     i_pm25, _ = compute_cpcb_subindex(pm25, CONSTANTS["cpcb_pm25_breakpoints"])
     i_pm10, _ = compute_cpcb_subindex(pm10, CONSTANTS["cpcb_pm10_breakpoints"])
     i_no2, _ = compute_cpcb_subindex(no2, CONSTANTS["cpcb_no2_breakpoints"])
@@ -98,26 +170,35 @@ def compute_hourly_naqi(pm25: float, pm10: float, no2: float) -> dict[str, Any]:
     }
 
 
-def find_golden_window(hourly_points: list[HourlyAirPoint]) -> GoldenWindow:
-    """Scan daytime hours (07:00-19:00) for the lowest 2-hour mean PM2.5 window."""
+def _find_best_daytime_pair(pm25_day: list[float]) -> tuple[int, float]:
+    """Scan daytime sliding pairs 07:00-18:00 for minimum 2-hour mean PM2.5."""
     best_h = 13
     best_mean = float("inf")
     for h in range(7, 18):
-        pair_mean = (hourly_points[h].pm2_5 + hourly_points[h + 1].pm2_5) / 2.0
+        pair_mean = (pm25_day[h] + pm25_day[h + 1]) / 2.0
         if pair_mean < best_mean:
             best_mean = pair_mean
             best_h = h
+    return best_h, best_mean
+
+
+def find_golden_window(hourly_points: list[HourlyAirPoint]) -> GoldenWindow:
+    """Scan daytime hours (07:00-19:00) for lowest 2h PM2.5 window with <15% honesty rule."""
+    min_red_pct = float(ENGINE_PARAMS["golden_window_min_reduction_pct"])
+    pm25_series = [pt.pm2_5 for pt in hourly_points]
+    best_h, best_mean = _find_best_daytime_pair(pm25_series)
 
     morning_peak = max(hourly_points[h].pm2_5 for h in range(6, 10))
     morning_peak_naqi = max(hourly_points[h].cpcb_naqi for h in range(6, 10))
-    if morning_peak > 0:
-        reduction_pct = round(((morning_peak - best_mean) / morning_peak) * 100.0, 1)
-    else:
-        reduction_pct = 0.0
+    reduction_pct = (
+        round(((morning_peak - best_mean) / morning_peak) * 100.0, 1) if morning_peak > 0 else 0.0
+    )
 
-    mean_naqi = int(round((hourly_points[best_h].cpcb_naqi + hourly_points[best_h + 1].cpcb_naqi) / 2.0))
+    mean_naqi = int(
+        round((hourly_points[best_h].cpcb_naqi + hourly_points[best_h + 1].cpcb_naqi) / 2.0)
+    )
     is_clean_air_day = mean_naqi <= 100 and morning_peak_naqi <= 100
-    has_meaningful_window = is_clean_air_day or ((reduction_pct / 100.0) >= 0.15)
+    has_meaningful_window = is_clean_air_day or (reduction_pct >= min_red_pct)
     window_label = f"{best_h:02d}:00 - {best_h + 2:02d}:00"
 
     if is_clean_air_day:
@@ -128,14 +209,15 @@ def find_golden_window(hourly_points: list[HourlyAirPoint]) -> GoldenWindow:
     elif has_meaningful_window:
         advisory = (
             f"Lowest-exposure daytime window is {window_label} ({round(best_mean, 1)} ug/m3 PM2.5, "
-            f"NAQI {mean_naqi}), {reduction_pct:.0f}% lower than the morning peak ({round(morning_peak, 1)} ug/m3) "
-            "as daytime mixing lifts the boundary layer."
+            f"estimated hourly AQI {mean_naqi}), {reduction_pct:.0f}% lower than morning peak "
+            f"({round(morning_peak, 1)} ug/m3) as daytime mixing lifts the boundary layer."
         )
     else:
         advisory = (
-            f"No strong daytime dip today: best 2h window ({window_label}, {round(best_mean, 1)} ug/m3) "
-            f"is only {max(0.0, reduction_pct):.0f}% below the morning peak ({round(morning_peak, 1)} ug/m3). "
-            "Outdoor air stays uniformly elevated—shift strenuous exercise indoors."
+            f"No strong daytime dip today: best 2h window ({window_label}, {round(best_mean, 1)} "
+            f"ug/m3) is only {max(0.0, reduction_pct):.0f}% below morning peak "
+            f"({round(morning_peak, 1)} ug/m3). Outdoor air stays uniformly elevated—"
+            "shift strenuous exercise indoors."
         )
 
     return GoldenWindow(
@@ -170,6 +252,67 @@ def classify_meteorology_regime(hourly_points: list[HourlyAirPoint]) -> tuple[fl
     return round(morning_pblh, 1), regime
 
 
+def _summarize_single_day_outlook(
+    day_idx: int,
+    day_date: str,
+    day_pm25: list[float],
+    day_pm10: list[float],
+    day_no2: list[float],
+) -> DailyAirOutlook:
+    """Compute one day's outlook applying the <15% flat-curve honesty check."""
+    min_red_pct = float(ENGINE_PARAMS["golden_window_min_reduction_pct"])
+    try:
+        dt = datetime.strptime(day_date, "%Y-%m-%d")
+        day_label = f"Today ({dt.strftime('%a')})" if day_idx == 0 else dt.strftime("%a, %b %d")
+    except ValueError:
+        day_label = "Today" if day_idx == 0 else f"Day {day_idx + 1}"
+
+    day_naqis = [
+        int(compute_hourly_naqi(day_pm25[h], day_pm10[h], day_no2[h])["cpcb_naqi"])
+        for h in range(24)
+    ]
+    peak_pm25 = round(max(day_pm25), 1)
+    peak_naqi = max(day_naqis)
+    peak_category = category_for_naqi(peak_naqi)
+    morning_peak = max(day_pm25[h] for h in range(6, 10))
+    best_h, best_mean = _find_best_daytime_pair(day_pm25)
+    reduction_pct = (
+        round(((morning_peak - best_mean) / morning_peak) * 100.0, 1) if morning_peak > 0 else 0.0
+    )
+    has_meaningful = (peak_naqi <= 100) or (reduction_pct >= min_red_pct)
+    best_label = f"{best_h:02d}:00 - {best_h + 2:02d}:00"
+
+    if peak_naqi <= 100:
+        tip = "Good day for outdoor errands and walks."
+    elif not has_meaningful:
+        tip = (
+            "Uniformly elevated air all day (<15% midday drop)—keep heavy workouts indoors "
+            "and wear a fitted N95 for essential outdoor trips."
+        )
+    elif peak_naqi <= 200:
+        tip = f"Schedule flexible errands around {best_h:02d}:00-{best_h + 2:02d}:00."
+    elif peak_naqi <= 300:
+        tip = (
+            f"Poor air expected—limit trips to {best_h:02d}:00-{best_h + 2:02d}:00 "
+            "with a fitted N95 mask."
+        )
+    else:
+        tip = "Heavy smog expected—keep strenuous exercise indoors and seal rooms."
+
+    return DailyAirOutlook(
+        date=day_date,
+        day_label=day_label,
+        peak_pm25=peak_pm25,
+        peak_naqi=peak_naqi,
+        peak_category=peak_category,
+        best_window_label=best_label,
+        best_window_pm25=round(best_mean, 1),
+        reduction_pct=reduction_pct,
+        has_meaningful_window=has_meaningful,
+        tip=tip,
+    )
+
+
 def build_daily_outlook(raw_payload: dict[str, Any]) -> list[DailyAirOutlook]:
     """Compute 5-day future air outlook summaries from 120-hour multiday arrays."""
     multi = raw_payload.get("multiday_raw")
@@ -184,59 +327,23 @@ def build_daily_outlook(raw_payload: dict[str, Any]) -> list[DailyAirOutlook]:
 
     outlooks: list[DailyAirOutlook] = []
     for d in range(total_days):
-        start = d * 24
-        end = start + 24
-        day_date = times[start][:10]
-        try:
-            dt = datetime.strptime(day_date, "%Y-%m-%d")
-            day_label = f"Today ({dt.strftime('%a')})" if d == 0 else dt.strftime("%a, %b %d")
-        except ValueError:
-            day_label = "Today" if d == 0 else f"Day {d + 1}"
-
-        day_pm25 = [float(x) for x in pm25_all[start:end]]
-        day_pm10 = [float(x) for x in pm10_all[start:end]]
-        day_no2 = [float(x) for x in no2_all[start:end]]
-
-        day_naqis = [compute_hourly_naqi(day_pm25[h], day_pm10[h], day_no2[h])["cpcb_naqi"] for h in range(24)]
-        peak_pm25 = round(max(day_pm25), 1)
-        peak_naqi = max(day_naqis)
-        peak_category = category_for_naqi(peak_naqi)
-
-        best_h = 13
-        best_mean = float("inf")
-        for h in range(7, 18):
-            m = (day_pm25[h] + day_pm25[h + 1]) / 2.0
-            if m < best_mean:
-                best_mean = m
-                best_h = h
-
-        best_window_label = f"{best_h:02d}:00 - {best_h + 2:02d}:00"
-        if peak_naqi <= 100:
-            tip = "Good day for outdoor errands and walks."
-        elif peak_naqi <= 200:
-            tip = f"Schedule outdoor errands around {best_h:02d}:00-{best_h + 2:02d}:00."
-        elif peak_naqi <= 300:
-            tip = "Poor air expected—keep errands short with an N95 mask."
-        else:
-            tip = "Heavy smog expected—plan indoor workouts and keep rooms sealed."
-
+        start, end = d * 24, (d + 1) * 24
         outlooks.append(
-            DailyAirOutlook(
-                date=day_date,
-                day_label=day_label,
-                peak_pm25=peak_pm25,
-                peak_naqi=peak_naqi,
-                peak_category=peak_category,
-                best_window_label=best_window_label,
-                best_window_pm25=round(best_mean, 1),
-                tip=tip,
+            _summarize_single_day_outlook(
+                d,
+                times[start][:10],
+                [float(x) for x in pm25_all[start:end]],
+                [float(x) for x in pm10_all[start:end]],
+                [float(x) for x in no2_all[start:end]],
             )
         )
     return outlooks
 
 
-def build_air_snapshot(raw_payload: dict[str, Any], current_hour: int | None = None) -> AirSnapshotResponse:
-    """Convert fetched hourly arrays into a CPCB-enriched AirSnapshotResponse."""
+def build_air_snapshot(
+    raw_payload: dict[str, Any], current_hour: int | None = None
+) -> AirSnapshotResponse:
+    """Convert fetched hourly arrays into a CPCB-breakpoint AirSnapshotResponse."""
     city_key = raw_payload["city"]
     city_meta = CONSTANTS["cities"].get(city_key, {})
     hr = raw_payload["hourly_raw"]
@@ -268,24 +375,28 @@ def build_air_snapshot(raw_payload: dict[str, Any], current_hour: int | None = N
             )
         )
 
-    hour_idx = current_hour if current_hour is not None else datetime.now(IST_TZ).hour
-    hour_idx = max(0, min(23, hour_idx))
+    default_hr = datetime.now(IST_TZ).hour
+    hour_idx = max(0, min(23, current_hour if current_hour is not None else default_hr))
     current_pt = hourly_points[hour_idx]
-
     golden_window = find_golden_window(hourly_points)
     inversion_m, regime = classify_meteorology_regime(hourly_points)
-    daily_outlook = build_daily_outlook(raw_payload)
+
+    city_name = str(raw_payload.get("city_display") or city_meta.get("name") or city_key.title())
+    raw_lang = str(raw_payload.get("suggested_language") or city_meta.get("local_language") or "hi")
+    supported_langs = {"en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"}
+    sugg_lang: LanguageCode = cast(LanguageCode, raw_lang if raw_lang in supported_langs else "hi")
+    met_note = str(raw_payload.get("meteorology_note") or city_meta.get("meteorology_note", ""))
 
     return AirSnapshotResponse(
         city=city_key,
-        city_name=raw_payload.get("city_display") or city_meta.get("name") or city_key.title(),
+        city_name=city_name,
         area_name=raw_payload.get("area_name"),
         state=raw_payload.get("state"),
         lat=raw_payload.get("lat"),
         lon=raw_payload.get("lon"),
         is_coastal=bool(raw_payload.get("is_coastal", False)),
-        suggested_language=raw_payload.get("suggested_language") or city_meta.get("local_language") or "hi",
-        meteorology_note=raw_payload.get("meteorology_note") or city_meta.get("meteorology_note", ""),
+        suggested_language=sugg_lang,
+        meteorology_note=met_note,
         current_hour=hour_idx,
         current_pm25=current_pt.pm2_5,
         current_naqi=current_pt.cpcb_naqi,
@@ -295,7 +406,7 @@ def build_air_snapshot(raw_payload: dict[str, Any], current_hour: int | None = N
         meteorology_regime=regime,
         golden_window=golden_window,
         hourly=hourly_points,
-        daily_outlook=daily_outlook,
+        daily_outlook=build_daily_outlook(raw_payload),
         provenance=DataProvenance(**raw_payload["provenance"]),
     )
 
@@ -307,174 +418,317 @@ def compute_inhaled_dose_ug(
     duration_min: int,
     mask: MaskType,
 ) -> float:
-    """USEPA modeled PM2.5 inhaled dose proxy: C_out * kappa * V_E * dt_hr * (1 - eta)."""
+    """USEPA modeled PM2.5 inhaled dose proxy for a single concentration interval."""
     kappa = float(CONSTANTS["microenv_multipliers"][microenv_key])
     v_e = float(CONSTANTS["usepa_ventilation_m3_hr"].get(activity_level, 1.25))
     eta = float(CONSTANTS["mask_filtration_efficiency"][mask])
-    dt_hr = duration_min / 60.0
-    return round(outdoor_pm25 * kappa * v_e * dt_hr * (1.0 - eta), 2)
+    return round(outdoor_pm25 * kappa * v_e * (duration_min / 60.0) * (1.0 - eta), 2)
+
+
+def compute_interval_dose_ug(
+    hourly_points: list[HourlyAirPoint],
+    start_hour: int,
+    duration_min: int,
+    microenv_key: str,
+    activity_level: str,
+    mask: MaskType,
+) -> tuple[float, float, int]:
+    """Integrate PM2.5 dose hour-by-hour across an activity's full duration."""
+    if duration_min <= 0:
+        pt = hourly_points[start_hour % 24]
+        return 0.0, pt.pm2_5, pt.cpcb_naqi
+
+    remaining = duration_min
+    idx = start_hour % 24
+    total_dose = 0.0
+    weighted_pm25 = 0.0
+    weighted_naqi = 0.0
+
+    while remaining > 0:
+        chunk_min = min(60, remaining)
+        pt = hourly_points[idx]
+        total_dose += compute_inhaled_dose_ug(
+            pt.pm2_5, microenv_key, activity_level, chunk_min, mask
+        )
+        weighted_pm25 += pt.pm2_5 * chunk_min
+        weighted_naqi += pt.cpcb_naqi * chunk_min
+        remaining -= chunk_min
+        idx = (idx + 1) % 24
+
+    mean_pm25 = round(weighted_pm25 / duration_min, 1)
+    mean_naqi = int(round(weighted_naqi / duration_min))
+    return round(total_dose, 2), mean_pm25, mean_naqi
+
+
+def _find_best_start_hour_for_duration(
+    hourly_points: list[HourlyAirPoint],
+    golden: GoldenWindow,
+    duration_min: int,
+) -> int:
+    """Optimize flexible start hour across the actual duration window (not just 1st hour)."""
+    span_hours = max(1, (duration_min + 59) // 60)
+    if span_hours <= 2:
+        return golden.hours[0]
+
+    best_start = golden.hours[0]
+    best_mean = float("inf")
+    last_start = max(7, 20 - span_hours)
+    for start_h in range(7, last_start + 1):
+        window_pm25 = sum(
+            hourly_points[(start_h + offset) % 24].pm2_5 for offset in range(span_hours)
+        )
+        avg_pm25 = window_pm25 / span_hours
+        if avg_pm25 < best_mean:
+            best_mean = avg_pm25
+            best_start = start_h
+    return best_start
 
 
 def _has_sensitive_member(req: PlanRequest, member_name: str) -> bool:
-    sensitive_flags = {"asthma", "copd", "cardiac", "elderly", "child", "hypertension"}
+    """Return True if the named member (or household if unmapped) is respiratory-sensitive."""
+    ages = ENGINE_PARAMS["age_cutoffs"]
+    flags = {"asthma", "copd", "cardiac", "elderly", "child", "hypertension"}
     for m in req.members:
-        if m.name == member_name and (m.age <= 12 or m.age >= 65 or bool(set(m.conditions) & sensitive_flags)):
-            return True
-    return any(m.age <= 12 or m.age >= 65 or bool(set(m.conditions) & {"asthma", "copd"}) for m in req.members)
+        if m.name == member_name:
+            return (
+                m.age <= int(ages["sensitive_child_max"])
+                or m.age >= int(ages["sensitive_elderly_min"])
+                or bool(set(m.conditions) & flags)
+            )
+    return any(
+        m.age <= int(ages["sensitive_child_max"])
+        or m.age >= int(ages["sensitive_elderly_min"])
+        or bool(set(m.conditions) & {"asthma", "copd"})
+        for m in req.members
+    )
 
 
-def _choose_mask(pm25: float, budget_tier: str, current_mask: MaskType, sensitive: bool, is_work_shift: bool = False) -> MaskType:
+def _choose_mask(
+    pm25: float,
+    budget_tier: str,
+    current_mask: MaskType,
+    sensitive: bool,
+    is_work_shift: bool = False,
+) -> MaskType:
+    """Select cost-feasible mask upgrade using constants.json PM2.5 thresholds."""
     if budget_tier == "rs_0":
         return current_mask
-    # Outdoor traffic workers breathe 1.55x roadside plumes over multi-hour shifts, so N95 pays off above 20 ug/m3
-    if is_work_shift and pm25 >= 20.0:
+    thresholds = ENGINE_PARAMS["mask_thresholds_pm25"]
+    if is_work_shift and pm25 >= float(thresholds["work_shift_n95"]):
         return "n95"
-    if pm25 > 60.0 or (sensitive and pm25 > 40.0):
+    if pm25 > float(thresholds["general_n95"]) or (
+        sensitive and pm25 > float(thresholds["sensitive_n95"])
+    ):
         return "n95"
     return current_mask
+
+
+def _schedule_fixed_activity(
+    act: Any,
+    req: PlanRequest,
+    c_rec: float,
+    sensitive: bool,
+    base_micro: str,
+    target_commute_micro: str,
+) -> tuple[str, MaskType, list[str], str]:
+    """Generate harm-reduction steps for a fixed work, commute, or school activity."""
+    arai_map = CONSTANTS["arai_transport_emissions"]
+    mitigation_steps: list[str] = []
+
+    if act.is_work_shift:
+        opt_micro = base_micro
+        rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, True, is_work_shift=True)
+        if rec_mask == "n95":
+            mitigation_steps.append("Wear a well-fitted N95/FFP2 respirator across peak corridors.")
+        else:
+            mitigation_steps.append("Use a snug wrap and take hydration breaks off arterial roads.")
+        mitigation_steps.append("Wait for orders 10-15m away from idling diesel/auto queues.")
+        mitigation_steps.append(
+            "Rinse face/nose with plain water post-shift; recover in Sanctuary Room."
+        )
+        rationale = (
+            f"Fixed work shift stays at {act.planned_hour:02d}:00; focuses on N95 filtration "
+            "and off-curb buffers rather than impractical stay-home advice."
+        )
+        return opt_micro, rec_mask, mitigation_steps, rationale
+
+    if act.is_commute:
+        opt_micro = target_commute_micro
+        rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, sensitive)
+        base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
+        target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
+        if req.target_commute_mode != req.commute_mode:
+            mitigation_steps.append(
+                f"Switch mode from {base_spec['label']} to {target_spec['label']}."
+            )
+        elif req.commute_mode in {"car_petrol_solo", "car_diesel_solo", "carpool_3p"}:
+            mitigation_steps.append(
+                "Keep car AC on Internal Recirculate mode in congested stretches."
+            )
+        if rec_mask == "n95":
+            mitigation_steps.append(
+                "Wear a fitted N95 mask on platforms, walkways, and exposed roads."
+            )
+        elif req.budget_tier == "rs_0":
+            mitigation_steps.append(
+                "Keep windows closed in congestion and pick quieter side-streets."
+            )
+        rationale = (
+            f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
+            "mitigation reduce on-road PM2.5 uptake."
+        )
+        return opt_micro, rec_mask, mitigation_steps, rationale
+
+    opt_micro = base_micro
+    rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, sensitive)
+    if rec_mask == "n95":
+        mitigation_steps.append("Use a child/adult fitted N95 mask during the roadside wait.")
+    elif req.budget_tier == "rs_0":
+        mitigation_steps.append("Keep wait time right before pickup under 3 minutes.")
+    mitigation_steps.append("Stand 5 meters back from curb/bus exhaust zones while waiting.")
+    rationale = f"Fixed commitment remains at {act.planned_hour:02d}:00 with roadside mitigation."
+    return opt_micro, rec_mask, mitigation_steps, rationale
+
+
+def _schedule_flexible_activity(
+    act: Any,
+    req: PlanRequest,
+    hourly: list[HourlyAirPoint],
+    golden: GoldenWindow,
+    sensitive: bool,
+    rec_h: int,
+    c_orig: float,
+    c_rec: float,
+    is_slider_target: bool,
+) -> tuple[str, str, MaskType, list[str], str]:
+    """Shift flexible outdoor activity to lower-exposure hour or Sanctuary Room."""
+    mitigation_steps: list[str] = []
+    rec_mask: MaskType = act.current_mask
+
+    if not golden.has_meaningful_window and req.walk_override_hour is None and sensitive:
+        opt_micro = "indoor_sealed" if req.budget_tier != "rs_0" else "indoor_shut"
+        badge = "FLEXIBLE • INDOOR"
+        mitigation_steps.append(
+            "Outdoor PM2.5 stays flat (<15% dip); move exercise inside the Sanctuary Room."
+        )
+        mitigation_steps.append(
+            "Do light stretching or indoor walking instead of outdoor exertion."
+        )
+        rationale = (
+            "Honesty rule triggered: no meaningful daytime drop, so vigorous exercise moves inside."
+        )
+        return badge, opt_micro, rec_mask, mitigation_steps, rationale
+
+    opt_micro = "walk_sidewalk"
+    if req.walk_override_hour is not None and is_slider_target:
+        badge = "WHAT-IF • TESTED"
+    elif rec_h != act.planned_hour:
+        badge = "FLEXIBLE • SHIFTED"
+    else:
+        badge = "FLEXIBLE • KEPT"
+
+    if rec_h != act.planned_hour:
+        mitigation_steps.append(
+            f"Shift from {act.planned_hour:02d}:00 ({c_orig} ug/m3 avg) "
+            f"to {rec_h:02d}:00 ({c_rec} ug/m3 avg)."
+        )
+    else:
+        mitigation_steps.append(f"Timing at {rec_h:02d}:00 already sits in a lower-exposure slot.")
+
+    midday_n95_cutoff = float(ENGINE_PARAMS["mask_thresholds_pm25"]["midday_flexible_n95"])
+    if c_rec > midday_n95_cutoff and req.budget_tier != "rs_0":
+        rec_mask = "n95"
+        mitigation_steps.append("Air remains Poor/Very Poor even midday—add a fitted N95 mask.")
+    else:
+        mitigation_steps.append("Pick tree-lined lanes away from main arterial intersections.")
+
+    rationale = (
+        f"Flexible slot evaluated over {act.duration_min} min from {rec_h:02d}:00 "
+        f"(mixing height {hourly[rec_h].boundary_layer_height:.0f} m)."
+    )
+    return badge, opt_micro, rec_mask, mitigation_steps, rationale
 
 
 def _schedule_activities(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
 ) -> tuple[list[RoutineItemResult], float, float, list[str]]:
-    """Run constraint-aware scheduling and USEPA dosimetry across all household tasks."""
+    """Run constraint-aware scheduling and hourly-integrated USEPA dosimetry."""
     hourly = snapshot.hourly
     golden = snapshot.golden_window
-    best_h = golden.hours[0]
     arai_map = CONSTANTS["arai_transport_emissions"]
-    base_commute_micro = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])["microenv"]
-    target_commute_micro = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])["microenv"]
+    base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
+    target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
+    base_commute_micro = str(base_spec["microenv"])
+    target_commute_micro = str(target_spec["microenv"])
 
     results: list[RoutineItemResult] = []
     total_base = 0.0
     total_opt = 0.0
     substitutions: list[str] = []
-
     walk_override_applied = False
 
     for act in req.activities:
-        orig_h = act.planned_hour
-        c_orig = hourly[orig_h].pm2_5
-        naqi_orig = hourly[orig_h].cpcb_naqi
         sensitive = _has_sensitive_member(req, act.member_name)
-
         base_micro = base_commute_micro if act.is_commute else "walk_sidewalk"
-        base_dose = compute_inhaled_dose_ug(c_orig, base_micro, act.activity_level, act.duration_min, act.current_mask)
-        mitigation_steps: list[str] = []
+        base_dose, c_orig, naqi_orig = compute_interval_dose_ug(
+            hourly,
+            act.planned_hour,
+            act.duration_min,
+            base_micro,
+            act.activity_level,
+            act.current_mask,
+        )
 
         if act.flexibility == "fixed":
-            rec_h = orig_h
-            c_rec = hourly[rec_h].pm2_5
-            naqi_rec = hourly[rec_h].cpcb_naqi
+            rec_h = act.planned_hour
             badge = "FIXED • MITIGATED"
-
-            if act.is_work_shift:
-                # Non-negotiable outdoor work shift (e.g., delivery rider): never tell them to stay indoors.
-                opt_micro = base_micro
-                rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, sensitive=True, is_work_shift=True)
-                if rec_mask == "n95":
-                    mitigation_steps.append("Wear a well-fitted N95/FFP2 respirator across peak traffic corridors.")
-                else:
-                    mitigation_steps.append("Use a snug double-layer wrap and take hydration breaks off arterial roads.")
-                mitigation_steps.append("Wait for orders 10-15m away from idling diesel/auto queues where possible.")
-                mitigation_steps.append("Rinse face and nose with plain water after the shift; recover in the Sanctuary Room.")
-                rationale = (
-                    f"Fixed work shift stays at {rec_h:02d}:00; harm-reduction focuses on fitted N95 filtration "
-                    "and off-curb waiting buffers rather than impractical stay-home advice."
-                )
-            elif act.is_commute:
-                opt_micro = target_commute_micro
-                rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, sensitive)
-                if req.target_commute_mode != req.commute_mode:
-                    target_lbl = arai_map.get(req.target_commute_mode, {}).get("label", req.target_commute_mode)
-                    mitigation_steps.append(f"Switch mode from {arai_map[req.commute_mode]['label']} to {target_lbl}.")
-                elif req.commute_mode in {"car_petrol_solo", "car_diesel_solo", "carpool_3p"}:
-                    mitigation_steps.append("Keep car AC on Internal Recirculate mode (do not pull fresh exhaust air).")
-                if rec_mask == "n95":
-                    mitigation_steps.append("Wear a fitted N95 mask on platforms, walkways, and exposed road stretches.")
-                elif req.budget_tier == "rs_0":
-                    mitigation_steps.append("Keep windows closed in traffic bottlenecks and pick quieter side-streets.")
-                rationale = (
-                    f"Fixed commute stays at {rec_h:02d}:00; switching microenvironment and filtration cuts "
-                    "on-road PM2.5 uptake."
-                )
-            else:
-                opt_micro = base_micro
-                rec_mask = _choose_mask(c_rec, req.budget_tier, act.current_mask, sensitive)
-                if rec_mask == "n95":
-                    mitigation_steps.append("Use a child/adult fitted N95 mask during the roadside wait.")
-                elif req.budget_tier == "rs_0":
-                    mitigation_steps.append("Keep wait time right before pickup to under 3 minutes.")
-                mitigation_steps.append("Stand 5 meters back from the curb/bus exhaust zone while waiting.")
-                rationale = f"Fixed commitment remains at {rec_h:02d}:00 with roadside timing and mask mitigation."
+            opt_micro, rec_mask, steps, rationale = _schedule_fixed_activity(
+                act, req, c_orig, sensitive, base_micro, target_commute_micro
+            )
         else:
-            # Flexible commitment
-            is_primary_slider_target = (
+            is_slider = (
                 req.walk_override_hour is not None
                 and not walk_override_applied
                 and (act.activity_level in PRIMARY_FLEX_LEVELS or act == req.activities[-1])
             )
-            if is_primary_slider_target and req.walk_override_hour is not None:
+            if is_slider and req.walk_override_hour is not None:
                 rec_h = req.walk_override_hour
                 walk_override_applied = True
             else:
-                rec_h = best_h
+                rec_h = _find_best_start_hour_for_duration(hourly, golden, act.duration_min)
 
-            c_rec = hourly[rec_h].pm2_5
-            naqi_rec = hourly[rec_h].cpcb_naqi
-            rec_mask = act.current_mask
+            _, c_rec_preview, _ = compute_interval_dose_ug(
+                hourly,
+                rec_h,
+                act.duration_min,
+                "walk_sidewalk",
+                act.activity_level,
+                act.current_mask,
+            )
+            badge, opt_micro, rec_mask, steps, rationale = _schedule_flexible_activity(
+                act, req, hourly, golden, sensitive, rec_h, c_orig, c_rec_preview, is_slider
+            )
 
-            if not golden.has_meaningful_window and req.walk_override_hour is None and sensitive:
-                opt_micro = "indoor_sealed" if req.budget_tier != "rs_0" else "indoor_shut"
-                badge = "FLEXIBLE • INDOOR"
-                mitigation_steps.append("Outdoor PM2.5 stays flatly elevated today (<15% dip); move exercise inside the Sanctuary Room.")
-                mitigation_steps.append("Do light stretching or indoor walking instead of heavy outdoor breathing.")
-                rationale = "Honesty rule triggered: no meaningful daytime drop, so vigorous activity moves indoors."
-            else:
-                opt_micro = "walk_sidewalk"
-                if req.walk_override_hour is not None and is_primary_slider_target:
-                    badge = "WHAT-IF • TESTED"
-                elif rec_h != orig_h:
-                    badge = "FLEXIBLE • SHIFTED"
-                else:
-                    badge = "FLEXIBLE • KEPT"
-
-                if rec_h != orig_h:
-                    mitigation_steps.append(
-                        f"Shift from {orig_h:02d}:00 ({c_orig} ug/m3) to {rec_h:02d}:00 ({c_rec} ug/m3)."
-                    )
-                else:
-                    mitigation_steps.append(f"Timing at {rec_h:02d}:00 already sits in a lower-exposure slot.")
-
-                if c_rec > 90.0 and req.budget_tier != "rs_0":
-                    rec_mask = "n95"
-                    mitigation_steps.append("Air remains Poor/Very Poor even midday—add a fitted N95 mask.")
-                else:
-                    mitigation_steps.append("Pick tree-lined lanes away from main arterial intersections.")
-
-                rationale = (
-                    f"Flexible slot evaluated at {rec_h:02d}:00 where boundary layer is "
-                    f"{hourly[rec_h].boundary_layer_height:.0f} m."
-                )
-
-        opt_dose = compute_inhaled_dose_ug(c_rec, opt_micro, act.activity_level, act.duration_min, rec_mask)
+        opt_dose, c_rec, naqi_rec = compute_interval_dose_ug(
+            hourly, rec_h, act.duration_min, opt_micro, act.activity_level, rec_mask
+        )
         avoided = round(base_dose - opt_dose, 2)
         total_base += base_dose
         total_opt += opt_dose
 
-        kappa_base = float(CONSTANTS["microenv_multipliers"][base_micro])
-        kappa_opt = float(CONSTANTS["microenv_multipliers"][opt_micro])
+        kappa_b = float(CONSTANTS["microenv_multipliers"][base_micro])
+        kappa_o = float(CONSTANTS["microenv_multipliers"][opt_micro])
         v_e = float(CONSTANTS["usepa_ventilation_m3_hr"].get(act.activity_level, 1.25))
-        eta_base = float(CONSTANTS["mask_filtration_efficiency"][act.current_mask])
-        eta_opt = float(CONSTANTS["mask_filtration_efficiency"][rec_mask])
+        eta_b = float(CONSTANTS["mask_filtration_efficiency"][act.current_mask])
+        eta_o = float(CONSTANTS["mask_filtration_efficiency"][rec_mask])
         dt_hr = act.duration_min / 60.0
 
         substitutions.append(
-            f"{act.name}: Base = {c_orig} * {kappa_base} * {v_e} * {dt_hr:.2f}h * (1-{eta_base}) = {base_dose} ug | "
-            f"Opt = {c_rec} * {kappa_opt} * {v_e} * {dt_hr:.2f}h * (1-{eta_opt}) = {opt_dose} ug (Saved {avoided} ug)"
+            f"{act.name} ({act.duration_min}m): Base avg {c_orig}*{kappa_b}*{v_e}*{dt_hr:.2f}h"
+            f"*(1-{eta_b})={base_dose} ug | Opt avg {c_rec}*{kappa_o}*{v_e}*{dt_hr:.2f}h"
+            f"*(1-{eta_o})={opt_dose} ug (Saved {avoided} ug)"
         )
-
         results.append(
             RoutineItemResult(
                 id=act.id,
@@ -482,7 +736,7 @@ def _schedule_activities(
                 member_name=act.member_name,
                 flexibility=act.flexibility,
                 badge=badge,
-                original_hour=orig_h,
+                original_hour=act.planned_hour,
                 recommended_hour=rec_h,
                 duration_min=act.duration_min,
                 original_pm25=c_orig,
@@ -493,7 +747,7 @@ def _schedule_activities(
                 baseline_dose_ug=base_dose,
                 optimized_dose_ug=opt_dose,
                 dose_avoided_ug=avoided,
-                mitigation_steps=mitigation_steps,
+                mitigation_steps=steps,
                 rationale=rationale,
             )
         )
@@ -501,58 +755,57 @@ def _schedule_activities(
     return results, round(total_base, 2), round(total_opt, 2), substitutions
 
 
-def score_sanctuary(req: PlanRequest, snapshot: AirSnapshotResponse) -> SanctuaryPlan:
-    """Rank rooms for Clean Air Sanctuary and compute window open/shut protocol + IAQ hacks."""
-    rooms = req.rooms if req.rooms else DEFAULT_ROOMS
-    scored: list[RoomScore] = []
+def _score_single_room(r: RoomSpec) -> RoomScore:
+    """Compute bounded heuristic Clean Air Sanctuary score (0..100) for one room."""
+    raw = (
+        100
+        - 15 * r.ext_windows
+        - (25 if r.road_facing else 0)
+        - (25 if r.kitchen_adjacent else 0)
+        - (10 if r.large_volume else 0)
+    )
+    score = max(0, min(100, raw))
+    reasons = [
+        "road-facing infiltration penalty (-25)" if r.road_facing else "away from street exhaust",
+        "adjacent to kitchen (-25)" if r.kitchen_adjacent else "isolated from cooking smoke",
+    ]
+    if r.ext_windows <= 1:
+        reasons.append(f"low leak surface ({r.ext_windows} ext window)")
+    return RoomScore(
+        name=r.name,
+        score=score,
+        ext_windows=r.ext_windows,
+        road_facing=r.road_facing,
+        kitchen_adjacent=r.kitchen_adjacent,
+        large_volume=r.large_volume,
+        is_sanctuary=False,
+        reason="; ".join(reasons),
+    )
 
-    for r in rooms:
-        score = (
-            100
-            - 15 * r.ext_windows
-            - (25 if r.road_facing else 0)
-            - (25 if r.kitchen_adjacent else 0)
-            - (10 if r.large_volume else 0)
-        )
-        reasons = []
-        if not r.road_facing:
-            reasons.append("away from street exhaust")
-        else:
-            reasons.append("road-facing infiltration penalty (-25)")
-        if not r.kitchen_adjacent:
-            reasons.append("isolated from cooking smoke")
-        else:
-            reasons.append("adjacent to kitchen (-25)")
-        if r.ext_windows <= 1:
-            reasons.append(f"low leak surface ({r.ext_windows} ext window)")
-        scored.append(
-            RoomScore(
-                name=r.name,
-                score=score,
-                ext_windows=r.ext_windows,
-                road_facing=r.road_facing,
-                kitchen_adjacent=r.kitchen_adjacent,
-                large_volume=r.large_volume,
-                is_sanctuary=False,
-                reason="; ".join(reasons),
-            )
-        )
 
-    scored.sort(key=lambda item: item.score, reverse=True)
-    scored[0].is_sanctuary = True
-    sanctuary_name = scored[0].name
-
-    # Window ventilation math comparing outdoor daytime minimum against modeled indoor proxy.
+def _build_window_advice(
+    snapshot: AirSnapshotResponse,
+    budget_tier: str,
+) -> WindowVentilationAdvice:
+    """Compare outdoor minimum vs modeled sealed indoor proxy without contradictions."""
     day_points = snapshot.hourly[7:19]
     min_pt = min(day_points, key=lambda p: p.pm2_5)
     mean_out_24h = sum(p.pm2_5 for p in snapshot.hourly) / 24.0
-    infiltration = 0.28 if req.budget_tier != "rs_0" else 0.50
-    modeled_indoor_base = round(mean_out_24h * infiltration, 1)
-    modeled_post_cooking = round(modeled_indoor_base + 220.0, 1)
+    infiltration = float(
+        ENGINE_PARAMS["infiltration_rs_0"]
+        if budget_tier == "rs_0"
+        else ENGINE_PARAMS["infiltration_sealed"]
+    )
+    cooking_spike = float(ENGINE_PARAMS["cooking_spike_pm25_ug_m3"])
+    flush_max = float(ENGINE_PARAMS["window_flush_max_outdoor_pm25"])
+    mod_cap = float(ENGINE_PARAMS["window_moderate_cap_pm25"])
 
-    if min_pt.pm2_5 <= 90.0:
-        end_hr = min(23, min_pt.hour + 1)
-        window_advice = WindowVentilationAdvice(
+    modeled_indoor_base = round(mean_out_24h * infiltration, 1)
+    modeled_post_cooking = round(modeled_indoor_base + cooking_spike, 1)
+    end_hr = min(23, min_pt.hour + 1)
+
+    if min_pt.pm2_5 <= modeled_indoor_base:
+        return WindowVentilationAdvice(
             action="timed_open",
             open_window_start_hour=min_pt.hour,
             open_window_end_hour=end_hr,
@@ -561,54 +814,108 @@ def score_sanctuary(req: PlanRequest, snapshot: AirSnapshotResponse) -> Sanctuar
             modeled_indoor_baseline_pm25=modeled_indoor_base,
             modeled_post_cooking_pm25=modeled_post_cooking,
             guidance=(
-                f"Open non-road-facing windows for 20 minutes around {min_pt.hour:02d}:00-{end_hr:02d}:00 "
-                f"(outdoor drops to {min_pt.pm2_5} ug/m3) to flush CO2 and cooking fumes; shut tight by sunset."
+                f"Open non-road-facing windows 20 min around {min_pt.hour:02d}:00-"
+                f"{end_hr:02d}:00 (outdoor {min_pt.pm2_5} ug/m3 dips at/below modeled indoor "
+                f"~{modeled_indoor_base} ug/m3) to refresh air; shut tight by sunset."
             ),
         )
-    else:
-        window_advice = WindowVentilationAdvice(
-            action="keep_shut_exhaust",
-            open_window_start_hour=None,
-            open_window_end_hour=None,
-            duration_minutes=0,
+
+    if min_pt.pm2_5 <= flush_max:
+        return WindowVentilationAdvice(
+            action="timed_open",
+            open_window_start_hour=min_pt.hour,
+            open_window_end_hour=end_hr,
+            duration_minutes=15,
             outdoor_min_pm25=min_pt.pm2_5,
             modeled_indoor_baseline_pm25=modeled_indoor_base,
             modeled_post_cooking_pm25=modeled_post_cooking,
             guidance=(
-                f"Keep exterior windows shut today: even at the lowest hour ({min_pt.hour:02d}:00), "
-                f"outdoor PM2.5 ({min_pt.pm2_5} ug/m3) exceeds modeled sealed indoor air (~{modeled_indoor_base} ug/m3). "
-                "Vent kitchen tadka strictly via closed kitchen door + exhaust fan for 15 min."
+                f"Outdoor PM2.5 dips to {min_pt.pm2_5} ug/m3 around {min_pt.hour:02d}:00-"
+                f"{end_hr:02d}:00 (above sealed indoor ~{modeled_indoor_base} ug/m3): open "
+                "non-road windows 15 min only as a brief CO2/cooking flush, then shut before dusk."
             ),
         )
+
+    extra_flush = (
+        " If indoor air feels stuffy during cooking, crack a non-roadside window for only 5-10 min "
+        "alongside your exhaust fan."
+        if min_pt.pm2_5 <= mod_cap
+        else ""
+    )
+    return WindowVentilationAdvice(
+        action="keep_shut_exhaust",
+        open_window_start_hour=None,
+        open_window_end_hour=None,
+        duration_minutes=0,
+        outdoor_min_pm25=min_pt.pm2_5,
+        modeled_indoor_baseline_pm25=modeled_indoor_base,
+        modeled_post_cooking_pm25=modeled_post_cooking,
+        guidance=(
+            f"Keep exterior windows shut today: lowest outdoor PM2.5 ({min_pt.pm2_5} ug/m3 at "
+            f"{min_pt.hour:02d}:00) exceeds modeled indoor air (~{modeled_indoor_base} ug/m3). "
+            f"Vent kitchen tadka via closed kitchen door + exhaust fan for 15 min.{extra_flush}"
+        ),
+    )
+
+
+def _collect_sanctuary_alerts(req: PlanRequest) -> list[str]:
+    """Build indoor source-control and persona-specific Sanctuary alerts."""
+    ages = ENGINE_PARAMS["age_cutoffs"]
+    alerts: list[str] = []
+    if req.uses_agarbatti_or_coils:
+        alerts.append(
+            "Detected agarbatti/mosquito coil use: pause indoor burning on elevated-AQI days."
+        )
+    if req.dry_sweeps:
+        alerts.append(
+            "Switch dry jhadu sweeping to damp wet-mopping (pochha) to curb dust resuspension."
+        )
+    if any("asthma" in m.conditions or "copd" in m.conditions for m in req.members):
+        alerts.append(
+            "Keep prescribed rescue inhaler / reliever medication accessible in Sanctuary Room."
+        )
+
+    senior_min = int(ages["sensitive_elderly_min"])
+    if req.user_category == "delivery_riders" or any(a.is_work_shift for a in req.activities):
+        alerts.append(
+            "Rider recovery: shake dusty outer jacket outside entry door and rinse nose/face."
+        )
+    elif req.user_category == "seniors" or any(m.age >= senior_min for m in req.members):
+        alerts.append(
+            "Senior protection: avoid cold outdoor drafts before 9 AM and keep Sanctuary Room warm."
+        )
+    elif req.user_category == "students_kids" or any(m.age <= 18 for m in req.members):
+        alerts.append(
+            "Student/kid routine: keep study desk away from street windows and wipe school shoes."
+        )
+    else:
+        alerts.append(
+            "Commuter home setup: seal corridor door leaks and flush interior air only at midday."
+        )
+    return alerts
+
+
+def score_sanctuary(req: PlanRequest, snapshot: AirSnapshotResponse) -> SanctuaryPlan:
+    """Rank rooms for Clean Air Sanctuary and compute window open/shut protocol + IAQ hacks."""
+    rooms = req.rooms if req.rooms else DEFAULT_ROOMS
+    scored = [_score_single_room(room) for room in rooms]
+    scored.sort(key=lambda item: item.score, reverse=True)
+    scored[0].is_sanctuary = True
 
     limit_inr = int(CONSTANTS["budget_tier_limits_inr"][req.budget_tier])
     hacks = [h for h in CONSTANTS["iaq_hacks"] if int(h["max_cost_inr"]) <= limit_inr]
 
-    alerts: list[str] = []
-    if req.uses_agarbatti_or_coils:
-        alerts.append("Detected agarbatti/mosquito coil use: pause indoor burning immediately on elevated-AQI days.")
-    if req.dry_sweeps:
-        alerts.append("Switch from dry jhadu sweeping to damp wet-mopping (pochha) to prevent dust resuspension.")
-    if any("asthma" in m.conditions or "copd" in m.conditions for m in req.members):
-        alerts.append("Keep prescribed rescue inhaler / reliever medication accessible in the Sanctuary Room.")
-
-    if req.user_category == "delivery_riders" or any(a.is_work_shift for a in req.activities):
-        alerts.append("Rider recovery: shake out helmet & dusty outer jacket outside entry door and rinse nose/face after shift.")
-    elif req.user_category == "seniors" or any(m.age >= 65 for m in req.members):
-        alerts.append("Senior protection: avoid cold outdoor drafts before 9 AM and keep Sanctuary Room gently insulated.")
-    elif req.user_category == "students_kids" or any(m.age <= 18 for m in req.members):
-        alerts.append("Student/kid routine: keep study desk away from street-facing windows and wipe dusty school shoes at the door.")
-    else:
-        alerts.append("Commuter home setup: seal front-door corridor leaks and ventilate interior rooms only during midday dips.")
-
     return SanctuaryPlan(
-        sanctuary_room=sanctuary_name,
+        sanctuary_room=scored[0].name,
         room_scores=scored,
-        window_advice=window_advice,
-        co2_safety_note="Leave an interior door slightly ajar overnight so indoor CO2 does not build up while sleeping.",
-        no_houseplants_note="Indoor houseplants do not remove meaningful PM2.5 in real homes; focus on source control, sealing gaps, and filtration.",
+        window_advice=_build_window_advice(snapshot, req.budget_tier),
+        co2_safety_note="Leave an inner door slightly ajar overnight so CO2 does not build up.",
+        no_houseplants_note=(
+            "Indoor houseplants do not remove meaningful PM2.5 in real homes; focus on source "
+            "control, sealing gaps, and filtration."
+        ),
         applicable_hacks=hacks,
-        personalized_alerts=alerts,
+        personalized_alerts=_collect_sanctuary_alerts(req),
     )
 
 
@@ -618,31 +925,218 @@ def compute_emit_less(req: PlanRequest) -> EmitLessLedger:
     base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
     target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
 
-    co2_saved_g = round(req.commute_km * (float(base_spec["co2_g_pkm"]) - float(target_spec["co2_g_pkm"])), 1)
+    co2_saved_g = round(
+        req.commute_km * (float(base_spec["co2_g_pkm"]) - float(target_spec["co2_g_pkm"])), 1
+    )
     co2_saved_kg = round(co2_saved_g / 1000.0, 3)
-    tailpipe_pm25_mg = round(req.commute_km * (float(base_spec["pm25_mg_pkm"]) - float(target_spec["pm25_mg_pkm"])), 1)
+    tailpipe_pm25_mg = round(
+        req.commute_km * (float(base_spec["pm25_mg_pkm"]) - float(target_spec["pm25_mg_pkm"])), 1
+    )
 
     substitutions = [
-        f"CO2e Saved = {req.commute_km} km * ({base_spec['co2_g_pkm']} - {target_spec['co2_g_pkm']}) g/pkm = {co2_saved_g} g ({co2_saved_kg} kg)",
-        f"Tailpipe PM2.5 Saved = {req.commute_km} km * ({base_spec['pm25_mg_pkm']} - {target_spec['pm25_mg_pkm']}) mg/pkm = {tailpipe_pm25_mg} mg",
+        f"CO2e = {req.commute_km} km * ({base_spec['co2_g_pkm']} - {target_spec['co2_g_pkm']}) "
+        f"g/pkm = {co2_saved_g} g ({co2_saved_kg} kg)",
+        f"Tailpipe PM2.5 = {req.commute_km} km * ({base_spec['pm25_mg_pkm']} - "
+        f"{target_spec['pm25_mg_pkm']}) mg/pkm = {tailpipe_pm25_mg} mg",
     ]
     if req.commute_mode == req.target_commute_mode:
-        substitutions.append("Same transport mode kept (e.g., fixed work vehicle); tailpipe counterfactual savings = 0.")
+        substitutions.append(
+            "Same transport mode kept (e.g., fixed work vehicle); tailpipe counterfactual = 0."
+        )
 
     return EmitLessLedger(
         baseline_mode=req.commute_mode,
         target_mode=req.target_commute_mode,
-        baseline_mode_label=base_spec["label"],
-        target_mode_label=target_spec["label"],
+        baseline_mode_label=str(base_spec["label"]),
+        target_mode_label=str(target_spec["label"]),
         commute_km=req.commute_km,
         co2_saved_g=co2_saved_g,
         co2_saved_kg=co2_saved_kg,
         tailpipe_pm25_saved_mg=tailpipe_pm25_mg,
         label="Modeled Estimate",
-        formula_summary="Delta CO2e (g) = km * (EF_CO2_base - EF_CO2_new); Delta Tailpipe PM2.5 (mg) = km * (EF_PM_base - EF_PM_new)",
+        formula_summary=(
+            "Delta CO2e (g) = km * (EF_CO2_base - EF_CO2_new); "
+            "Delta Tailpipe PM2.5 (mg) = km * (EF_PM_base - EF_PM_new)"
+        ),
         substitutions=substitutions,
-        limitations="Uses ARAI / WRI India average per-passenger-km emission factors; actual fuel efficiency, occupancy, and traffic idling vary.",
+        limitations=(
+            "Uses ARAI / WRI India average per-passenger-km emission factors; actual fuel use, "
+            "occupancy, and congestion idling vary."
+        ),
     )
+
+
+def _resolve_profile_key(req: PlanRequest) -> UserCategory:
+    """Determine primary user category from explicit flag or household profile."""
+    if req.user_category is not None:
+        return req.user_category
+    ages = ENGINE_PARAMS["age_cutoffs"]
+    all_conditions = {c for m in req.members for c in m.conditions}
+    if any(a.is_work_shift for a in req.activities) or "outdoor_worker" in all_conditions:
+        return "delivery_riders"
+    senior_tags = {"elderly", "copd", "cardiac"}
+    if any(
+        m.age >= int(ages["senior_profile_min"]) or bool(set(m.conditions) & senior_tags)
+        for m in req.members
+    ):
+        return "seniors"
+    if any(
+        m.age <= int(ages["student_kid_max"]) or bool(set(m.conditions) & {"child", "student"})
+        for m in req.members
+    ):
+        return "students_kids"
+    return "adults_commuters"
+
+
+def _build_profile_copy(
+    key: UserCategory,
+    snapshot: AirSnapshotResponse,
+    breathe_less: BreatheLessLedger,
+    emit_less: EmitLessLedger,
+    peak_ve: float,
+    hrs: float,
+) -> tuple[str, str, str]:
+    """Return (warning_banner, tailored_hero_headline, physiology_note) for profile key."""
+    gw = snapshot.golden_window
+    pm25 = snapshot.current_pm25
+    naqi = snapshot.current_naqi
+    best_win = f"{gw.start_hour:02d}:00–{gw.end_hour:02d}:00"
+    threshold = int(ENGINE_PARAMS["category_warning_thresholds_naqi"][key])
+    co2_str = (
+        f"{emit_less.co2_saved_kg} kg"
+        if emit_less.co2_saved_g >= 1000
+        else f"{emit_less.co2_saved_g} g"
+    )
+
+    if key == "delivery_riders":
+        mult = float(ENGINE_PARAMS["roadside_plume_multiplier"])
+        road_pm25 = round(pm25 * mult, 1)
+        physiology = (
+            f"Road-facing shifts (~{hrs}h at {peak_ve} m3/hr) hit ~{road_pm25} ug/m3 road dust "
+            f"({mult}x ambient {pm25} ug/m3); daily dose: {breathe_less.optimized_dose_ug} ug "
+            f"vs {breathe_less.baseline_dose_ug} ug."
+        )
+        if naqi > 200:
+            banner = (
+                f"High Roadside Smog Alert (Hourly AQI {naqi}, Road ~{road_pm25} ug/m3): "
+                "Wear a snug N95 mask on 2-wheeler runs and take 10-min shaded breaks off roads."
+            )
+        elif naqi > threshold:
+            banner = (
+                f"Delivery Rider Warning (Hourly AQI {naqi} > {threshold} limit): Roadside {mult}x "
+                f"exhaust lifts baseline intake to {breathe_less.baseline_dose_ug} ug—wear N95."
+            )
+        else:
+            banner = (
+                f"Hourly AQI {naqi} is below {threshold}, yet {hrs}h in traffic builds "
+                f"{breathe_less.baseline_dose_ug} ug unmasked—keep an N95 handy in congestion."
+            )
+        headline = (
+            f"Ambient air is {snapshot.current_category} (AQI {naqi}), but {hrs}h in traffic puts "
+            f"road PM2.5 near {road_pm25} ug/m3 — N95 cuts dose by {breathe_less.reduction_pct}%."
+            if gw.is_clean_air_day
+            else f"Fixed shifts sit near ~{road_pm25} ug/m3 road dust — N95 + off-curb waits "
+            f"avoid {breathe_less.dose_avoided_ug} ug PM2.5 ({breathe_less.reduction_pct}% less)."
+        )
+        return banner, headline, physiology
+
+    if key == "seniors":
+        physiology = (
+            f"65+ / COPD airways react earlier at {peak_ve} m3/hr walking pace: cold morning smog "
+            f"({gw.morning_peak_pm25} ug/m3 peak) strains airways well before adult alerts fire."
+        )
+        if naqi > 200:
+            banner = (
+                f"Senior Health Alert (Hourly AQI {naqi}): Skip pre-9 AM outdoor walks, shut "
+                "windows, and keep rescue inhalers / BP meds beside you."
+            )
+        elif naqi > threshold:
+            banner = (
+                f"Senior Precaution Active (Hourly AQI {naqi} > {threshold} limit): Skip cold "
+                f"inversion walks—shift strolls to {best_win} and wear an N95 in transit."
+            )
+        else:
+            banner = (
+                f"Low-strain range for seniors today (Hourly AQI {naqi} <= {threshold}): Enjoy "
+                f"daytime walks at {best_win}, skip chilly pre-dawn hours, breathe via nose."
+            )
+        if gw.is_clean_air_day:
+            headline = f"Comfortable air for seniors ({pm25} ug/m3) — walk around {best_win}."
+        elif gw.has_meaningful_window:
+            headline = (
+                f"Move senior walk from cold 6-8 AM smog to warmer {best_win} "
+                f"({round(gw.reduction_pct)}% cleaner)."
+            )
+        else:
+            headline = (
+                "Elevated stagnant air today — pause senior outdoor walks and stretch inside."
+            )
+        return banner, headline, physiology
+
+    if key == "students_kids":
+        physiology = (
+            f"Growing lungs inhale more per kg body weight (up to {peak_ve} m3/hr in sports) near "
+            f"exhaust height, driving {breathe_less.baseline_dose_ug} ug baseline peak dose."
+        )
+        if naqi > 200:
+            banner = (
+                f"Student & Kid Alert (Hourly AQI {naqi}): Move school assembly & sports indoors; "
+                "send a fitted N95 for commutes."
+            )
+        elif naqi > threshold:
+            banner = (
+                f"Kids Precaution Triggered (Hourly AQI {naqi} > {threshold}): Limit sprints, step "
+                f"back from idling buses, and shift play toward {best_win}."
+            )
+        else:
+            banner = (
+                f"Good day for school sports & evening play (Hourly AQI {naqi} <= {threshold}): "
+                "Keep pickup queues 5m back from idling buses."
+            )
+        if gw.is_clean_air_day:
+            headline = (
+                f"Favorable outdoor day for school & park play ({pm25} ug/m3) — skip bus exhaust."
+            )
+        elif gw.has_meaningful_window:
+            headline = (
+                f"Shift playground sports to {best_win} ({round(gw.reduction_pct)}% lower exposure)"
+                " instead of evening rush."
+            )
+        else:
+            headline = "Elevated pollution all day — hold school PE indoors and skip sprints."
+        return banner, headline, physiology
+
+    physiology = (
+        f"Healthy adult lungs ({peak_ve} m3/hr brisk walk) face lower acute risk under NAQI 150—"
+        f"biggest gains are workout timing and shifting {emit_less.commute_km} km ({co2_str} CO2)."
+    )
+    if naqi > 200:
+        banner = (
+            f"Commuter & Workout Warning (Hourly AQI {naqi} > 150): Move cardio indoors, wear "
+            "N95 in transit, and keep car AC on recirculate."
+        )
+    elif naqi > threshold:
+        banner = (
+            f"Adult Advisory (Hourly AQI {naqi} > 150): Shift runs to {best_win} and take "
+            f"{emit_less.target_mode_label} or AC-recirculate."
+        )
+    else:
+        banner = (
+            f"Within standard adult threshold (Hourly AQI {naqi} <= 150): Shifting to "
+            f"{emit_less.target_mode_label} avoids {co2_str} CO2 today."
+        )
+    if gw.is_clean_air_day:
+        headline = (
+            f"Favorable air for adult workouts (AQI {naqi}); shifting {emit_less.commute_km} km "
+            f"saves {co2_str} CO2."
+        )
+    elif gw.has_meaningful_window:
+        headline = (
+            f"Best adult workout window: {best_win} ({round(gw.reduction_pct)}% cleaner than AM)."
+        )
+    else:
+        headline = "Elevated smog exceeds adult threshold — move cardio inside and seal cabin air."
+    return banner, headline, physiology
 
 
 def build_profile_risk_summary(
@@ -651,196 +1145,35 @@ def build_profile_risk_summary(
     breathe_less: BreatheLessLedger,
     emit_less: EmitLessLedger,
 ) -> ProfileRiskSummary:
-    """Compute category-specific NAQI thresholds, lung intake, risk banner, and tailored guidance."""
-    all_conditions = {c for m in req.members for c in m.conditions}
-    if req.user_category is not None:
-        key = req.user_category
-    elif any(a.is_work_shift for a in req.activities) or "outdoor_worker" in all_conditions:
-        key = "delivery_riders"
-    elif any(m.age >= 60 or "elderly" in m.conditions or "copd" in m.conditions or "cardiac" in m.conditions for m in req.members):
-        key = "seniors"
-    elif any(m.age <= 22 or "child" in m.conditions or "student" in m.conditions for m in req.members):
-        key = "students_kids"
-    else:
-        key = "adults_commuters"
-
+    """Compute category-specific NAQI thresholds, lung intake, and risk banner."""
+    key = _resolve_profile_key(req)
     ve_map = CONSTANTS["usepa_ventilation_m3_hr"]
-    peak_ve = round(max([float(ve_map.get(a.activity_level, 1.25)) for a in req.activities] or [1.25]), 2)
+    ve_list = [float(ve_map.get(a.activity_level, 1.25)) for a in req.activities] or [1.25]
+    peak_ve = round(max(ve_list), 2)
     total_outdoor_min = sum(a.duration_min for a in req.activities)
-    gw = snapshot.golden_window
-    pm25 = snapshot.current_pm25
-    naqi = snapshot.current_naqi
-    best_win = f"{gw.start_hour:02d}:00–{gw.end_hour:02d}:00"
     hrs = round(total_outdoor_min / 60.0, 1)
 
-    if key == "delivery_riders":
-        label = "Delivery Riders (Road-Exhaust Shift)"
-        tier = "Road Plume 1.55x + High Intake"
-        threshold = 100
-        warning_active = naqi > threshold
-        road_pm25 = round(pm25 * 1.55, 1)
-        physiology = (
-            f"Road-facing shifts (~{hrs}h outside at {peak_ve} m3/hr) experience ~{road_pm25} ug/m3 effective road dust "
-            f"(1.55x ambient {pm25} ug/m3); daily modeled dose: {breathe_less.optimized_dose_ug} ug vs {breathe_less.baseline_dose_ug} ug."
-        )
-        if naqi > 200:
-            risk_level = "Severe Road Exposure"
-            risk_badge = "High Exposure Alert (NAQI > 100)"
-            warning_banner = (
-                f"High Roadside Smog Alert (Ambient NAQI {naqi}, Road ~{road_pm25} ug/m3): Wear a snug N95 mask on all 2-wheeler "
-                f"runs and take 10-minute shaded breaks off main arterial roads."
-            )
-        elif warning_active:
-            risk_level = "High Road Exposure"
-            risk_badge = "Rider Warning (NAQI > 100)"
-            warning_banner = (
-                f"Delivery Rider Warning (NAQI {naqi} exceeds 100 limit): Roadside 1.55x exhaust elevates cumulative intake to "
-                f"{breathe_less.baseline_dose_ug} ug—wear a fitted N95 and rest in shaded side-lanes."
-            )
-        else:
-            risk_level = "Elevated Route Vigilance"
-            risk_badge = "Road Plume Active (1.55x)"
-            warning_banner = (
-                f"Ambient NAQI {naqi} is below 100, but {hrs}h in tailpipe traffic still builds {breathe_less.baseline_dose_ug} ug "
-                f"without protection—keep a fitted N95 handy in heavy traffic queues."
-            )
-        if gw.is_clean_air_day:
-            headline = (
-                f"Ambient air is {snapshot.current_category} (NAQI {naqi}), but {hrs}h in traffic puts effective road PM2.5 near "
-                f"{road_pm25} ug/m3 — N95 protection cuts lung dose by {breathe_less.reduction_pct}%."
-            )
-        else:
-            headline = (
-                f"Fixed work shifts stay at ~{road_pm25} ug/m3 roadside dust — N95 + off-curb waits avoid "
-                f"{breathe_less.dose_avoided_ug} ug PM2.5 ({breathe_less.reduction_pct}% less)."
-            )
-    elif key == "seniors":
-        label = "Seniors (High Lung Sensitivity)"
-        tier = "Sensitive Airways (Threshold NAQI > 100)"
-        threshold = 100
-        warning_active = naqi > threshold
-        physiology = (
-            f"65+ / COPD airways react earlier at {peak_ve} m3/hr walking pace: cold early-morning smog ({gw.morning_peak_pm25} ug/m3 peak) "
-            f"strains breathing & heart rate well before general adult alerts trigger."
-        )
-        if naqi > 200:
-            risk_level = "High Cardiorespiratory Risk"
-            risk_badge = "Senior Health Alert (NAQI > 100)"
-            warning_banner = (
-                f"Senior Health Alert (NAQI {naqi}): Skip all pre-9 AM outdoor walks, keep windows shut indoors, and keep prescribed "
-                f"rescue inhalers / BP meds beside you."
-            )
-        elif warning_active:
-            risk_level = "Elevated Senior Risk"
-            risk_badge = "Senior Warning (NAQI > 100)"
-            warning_banner = (
-                f"Senior Precaution Active (NAQI {naqi} > 100 threshold): Avoid early-morning cold inversion walks—shift slow strolls to "
-                f"{best_win} and wear an N95 for clinic travel."
-            )
-        else:
-            risk_level = "Low Senior Risk"
-            risk_badge = "Senior-Safe Threshold (<100)"
-            warning_banner = (
-                f"Safe range for seniors today (NAQI {naqi} <= 100): Enjoy gentle daytime walks at {best_win}, avoid chilly pre-dawn rush "
-                f"hours, and breathe gently through the nose."
-            )
-        if gw.is_clean_air_day:
-            headline = (
-                f"Comfortable air for seniors today ({pm25} ug/m3) — prefer sunny midday strolls around {best_win} and keep inhalers handy."
-            )
-        elif gw.has_meaningful_window:
-            headline = (
-                f"Move senior walk out of cold 6–8 AM smog into warmer {best_win} ({round(gw.reduction_pct)}% cleaner) to avoid morning strain."
-            )
-        else:
-            headline = "Elevated stagnant air today — pause outdoor senior walks and practice gentle indoor breathing."
-    elif key == "students_kids":
-        label = "Students & Kids (Developing Lungs)"
-        tier = "Higher Uptake/kg (Threshold NAQI > 100)"
-        threshold = 100
-        warning_active = naqi > threshold
-        physiology = (
-            f"Growing lungs breathe faster per kg body weight (up to {peak_ve} m3/hr in sports/play) closer to vehicle exhaust height, "
-            f"driving {breathe_less.baseline_dose_ug} ug baseline exposure if timed during traffic peaks."
-        )
-        if naqi > 200:
-            risk_level = "High Youth Exposure"
-            risk_badge = "School / Sports Alert (NAQI > 100)"
-            warning_banner = (
-                f"Student & Kid Alert (NAQI {naqi}): Move school assembly & outdoor sports indoors today; send a fitted mask for school commutes."
-            )
-        elif warning_active:
-            risk_level = "Elevated Kid Risk"
-            risk_badge = "Kids / Play Warning (NAQI > 100)"
-            warning_banner = (
-                f"Kids Precaution Triggered (NAQI {naqi} > 100 limit): Limit strenuous outdoor sprints, wait back from idling school buses, "
-                f"and shift evening play toward {best_win}."
-            )
-        else:
-            risk_level = "Low Youth Risk"
-            risk_badge = "School-Play Friendly (<100)"
-            warning_banner = (
-                f"Good day for school sports & evening play (NAQI {naqi} <= 100): Keep pickup queues 5m back from idling buses."
-            )
-        if gw.is_clean_air_day:
-            headline = (
-                f"Healthy outdoor day for school commute & playground games ({pm25} ug/m3) — stand clear of bus exhaust queues."
-            )
-        elif gw.has_meaningful_window:
-            headline = (
-                f"Shift playground sports to {best_win} ({round(gw.reduction_pct)}% lower exposure) instead of rush-hour evening play."
-            )
-        else:
-            headline = "Elevated pollution all day — hold school PE indoors and avoid intense outdoor sprints."
-    else:
-        label = "Adults & Daily Commuters"
-        tier = "Standard CPCB Band (Threshold NAQI > 150)"
-        threshold = 150
-        warning_active = naqi > threshold
-        co2_str = f"{emit_less.co2_saved_kg} kg" if emit_less.co2_saved_g >= 1000 else f"{emit_less.co2_saved_g} g"
-        physiology = (
-            f"Healthy adult lungs ({peak_ve} m3/hr brisk walk) face lower acute risk under NAQI 150—biggest gains come from optimizing "
-            f"workout hour and shifting {emit_less.commute_km} km car commute ({co2_str} CO2 saved)."
-        )
-        if naqi > 200:
-            risk_level = "High Commuter Strain"
-            risk_badge = "Outdoor Warning (NAQI > 150)"
-            warning_banner = (
-                f"Commuter & Workout Warning (NAQI {naqi} > 150 limit): Shift brisk cardio indoors, wear N95 in transit, and keep car AC on recirculate."
-            )
-        elif warning_active:
-            risk_level = "Elevated Commuter Risk"
-            risk_badge = "Advisory Active (NAQI > 150)"
-            warning_banner = (
-                f"Adult Advisory (NAQI {naqi} crossed 150): Move morning runs to {best_win} and take {emit_less.target_mode_label} or AC-recirculate."
-            )
-        else:
-            risk_level = "Low Adult Risk"
-            risk_badge = "Standard Threshold (<=150)"
-            warning_banner = (
-                f"Within standard adult threshold (NAQI {naqi} <= 150): Normal commutes & outdoor walks are fine; switching to "
-                f"{emit_less.target_mode_label} avoids {co2_str} CO2 today."
-            )
-        if gw.is_clean_air_day:
-            headline = (
-                f"Clean air for adult workouts today (NAQI {naqi}); shifting {emit_less.commute_km} km commute saves {co2_str} CO2."
-            )
-        elif gw.has_meaningful_window:
-            headline = (
-                f"Best workout window for adults: {best_win} ({round(gw.reduction_pct)}% cleaner than morning rush)."
-            )
-        else:
-            headline = "Elevated smog exceeds adult threshold — move cardio indoors and seal traffic cabin air."
+    desc = PROFILE_DESCRIPTORS[key]
+    threshold = int(ENGINE_PARAMS["category_warning_thresholds_naqi"][key])
+    naqi = snapshot.current_naqi
+    warning_active = naqi > threshold
+
+    band_idx = 0 if naqi > 200 else (1 if warning_active else 2)
+    risk_level = desc["severity_labels"][band_idx]
+    risk_badge = desc["badges"][band_idx]
+    banner, headline, physiology = _build_profile_copy(
+        key, snapshot, breathe_less, emit_less, peak_ve, hrs
+    )
 
     return ProfileRiskSummary(
         profile_key=key,
-        profile_label=label,
-        sensitivity_tier=tier,
+        profile_label=desc["label"],
+        sensitivity_tier=desc["tier"],
         warning_threshold_naqi=threshold,
         warning_active=warning_active,
         risk_level=risk_level,
         risk_badge=risk_badge,
-        warning_banner=warning_banner,
+        warning_banner=banner,
         peak_ventilation_m3_hr=peak_ve,
         total_outdoor_min=total_outdoor_min,
         tailored_hero_headline=headline,
@@ -848,51 +1181,112 @@ def build_profile_risk_summary(
     )
 
 
-def _collect_grounded_numbers(bundle: EvidenceBundle) -> list[float]:
-    """Collect numeric constants and bundle outputs for downstream LLM numeric verification."""
-    nums: set[float] = {
-        0.0, 2.0, 2.5, 10.0, 13.0, 15.0, 20.0, 95.0, 330.0, 500.0, 2200.0,
-        float(bundle.air_snapshot.current_hour),
-        float(bundle.air_snapshot.current_pm25),
-        float(bundle.air_snapshot.current_naqi),
-        float(bundle.air_snapshot.morning_inversion_ceiling_m),
-        float(bundle.air_snapshot.golden_window.start_hour),
-        float(bundle.air_snapshot.golden_window.end_hour),
-        float(bundle.air_snapshot.golden_window.mean_pm25),
-        float(bundle.air_snapshot.golden_window.mean_naqi),
-        float(bundle.air_snapshot.golden_window.morning_peak_pm25),
-        float(bundle.air_snapshot.golden_window.reduction_pct),
-        float(bundle.breathe_less.baseline_dose_ug),
-        float(bundle.breathe_less.optimized_dose_ug),
-        float(bundle.breathe_less.dose_avoided_ug),
-        float(bundle.breathe_less.reduction_pct),
-        float(bundle.breathe_less.cigarettes_avoided),
-        float(bundle.emit_less.commute_km),
-        float(bundle.emit_less.co2_saved_g),
-        float(bundle.emit_less.co2_saved_kg),
-        float(bundle.emit_less.tailpipe_pm25_saved_mg),
-        float(bundle.sanctuary_plan.window_advice.outdoor_min_pm25),
-        float(bundle.sanctuary_plan.window_advice.modeled_indoor_baseline_pm25),
-        float(bundle.sanctuary_plan.window_advice.modeled_post_cooking_pm25),
-        float(bundle.sanctuary_plan.window_advice.duration_minutes),
+def _collect_grounded_metrics(
+    snapshot: AirSnapshotResponse,
+    routine_plan: list[RoutineItemResult],
+    sanctuary_plan: SanctuaryPlan,
+    breathe_less: BreatheLessLedger,
+    emit_less: EmitLessLedger,
+    profile_summary: ProfileRiskSummary,
+) -> tuple[GroundedMetrics, list[float]]:
+    """Build category-scoped and global numeric allowlists before EvidenceBundle creation."""
+    road_pm25 = round(
+        snapshot.current_pm25 * float(ENGINE_PARAMS["roadside_plume_multiplier"]), 1
+    )
+    pm25_vals: set[float] = {
+        2.5,
+        60.0,
+        90.0,
+        road_pm25,
+        float(snapshot.current_pm25),
+        float(snapshot.golden_window.mean_pm25),
+        float(snapshot.golden_window.morning_peak_pm25),
+        float(sanctuary_plan.window_advice.outdoor_min_pm25),
+        float(sanctuary_plan.window_advice.modeled_indoor_baseline_pm25),
+        float(sanctuary_plan.window_advice.modeled_post_cooking_pm25),
     }
-    for pt in bundle.air_snapshot.hourly:
-        nums.update([float(pt.hour), float(pt.pm2_5), float(pt.pm10), float(pt.cpcb_naqi), float(pt.boundary_layer_height)])
-    for item in bundle.routine_plan:
-        nums.update([
-            float(item.original_hour), float(item.recommended_hour), float(item.duration_min),
-            float(item.original_pm25), float(item.recommended_pm25), float(item.original_naqi),
-            float(item.recommended_naqi), float(item.baseline_dose_ug), float(item.optimized_dose_ug),
+    naqi_vals: set[float] = {
+        100.0, 150.0, 200.0, 300.0, 500.0,
+        float(snapshot.current_naqi),
+        float(snapshot.golden_window.mean_naqi),
+        float(profile_summary.warning_threshold_naqi),
+    }
+    for pt in snapshot.hourly:
+        pm25_vals.add(float(pt.pm2_5))
+        naqi_vals.add(float(pt.cpcb_naqi))
+    for day in snapshot.daily_outlook:
+        pm25_vals.add(float(day.peak_pm25))
+        pm25_vals.add(float(day.best_window_pm25))
+        naqi_vals.add(float(day.peak_naqi))
+    for item in routine_plan:
+        pm25_vals.update([float(item.original_pm25), float(item.recommended_pm25)])
+        naqi_vals.update([float(item.original_naqi), float(item.recommended_naqi)])
+
+    dose_vals: set[float] = {
+        330.0,
+        float(breathe_less.baseline_dose_ug),
+        float(breathe_less.optimized_dose_ug),
+        float(breathe_less.dose_avoided_ug),
+    }
+    for item in routine_plan:
+        dose_vals.update([
+            float(item.baseline_dose_ug),
+            float(item.optimized_dose_ug),
             float(item.dose_avoided_ug),
         ])
-    for rm in bundle.sanctuary_plan.room_scores:
-        nums.add(float(rm.score))
-    if bundle.profile_summary:
-        nums.update([
-            float(bundle.profile_summary.peak_ventilation_m3_hr),
-            float(bundle.profile_summary.warning_threshold_naqi),
+
+    cigs_vals = sorted({float(breathe_less.cigarettes_avoided)})
+    co2_g_vals = sorted({float(emit_less.co2_saved_g)})
+    co2_kg_vals = sorted({float(emit_less.co2_saved_kg)})
+    tailpipe_vals = sorted({float(emit_less.tailpipe_pm25_saved_mg)})
+    pct_vals = sorted(
+        {float(snapshot.golden_window.reduction_pct), float(breathe_less.reduction_pct)}
+        | {float(day.reduction_pct) for day in snapshot.daily_outlook}
+    )
+
+    metrics = GroundedMetrics(
+        pm25=sorted(pm25_vals),
+        naqi=sorted(naqi_vals),
+        dose_ug=sorted(dose_vals),
+        cigarettes=cigs_vals,
+        co2_g=co2_g_vals,
+        co2_kg=co2_kg_vals,
+        tailpipe_mg=tailpipe_vals,
+        pct=pct_vals,
+    )
+
+    flat: set[float] = {
+        0.0, 2.0, 2.5, 10.0, 13.0, 15.0, 20.0, 95.0, 330.0, 500.0, 2200.0,
+        float(snapshot.current_hour),
+        float(snapshot.morning_inversion_ceiling_m),
+        float(snapshot.golden_window.start_hour),
+        float(snapshot.golden_window.end_hour),
+        float(sanctuary_plan.window_advice.duration_minutes),
+        float(emit_less.commute_km),
+        float(profile_summary.peak_ventilation_m3_hr),
+    }
+    flat.update(
+        pm25_vals,
+        naqi_vals,
+        dose_vals,
+        cigs_vals,
+        co2_g_vals,
+        co2_kg_vals,
+        tailpipe_vals,
+        pct_vals,
+    )
+    flat.update(float(pt.hour) for pt in snapshot.hourly)
+    flat.update(float(pt.pm10) for pt in snapshot.hourly)
+    flat.update(float(pt.boundary_layer_height) for pt in snapshot.hourly)
+    flat.update(float(rm.score) for rm in sanctuary_plan.room_scores)
+    for item in routine_plan:
+        flat.update([
+            float(item.original_hour),
+            float(item.recommended_hour),
+            float(item.duration_min),
         ])
-    return sorted(nums)
+
+    return metrics, sorted(flat)
 
 
 def build_evidence_bundle(
@@ -902,7 +1296,7 @@ def build_evidence_bundle(
     emergency_alert: bool = False,
     emergency_message: str | None = None,
 ) -> EvidenceBundle:
-    """Assemble the complete deterministic EvidenceBundle for PRANA-AI."""
+    """Assemble the complete immutable deterministic EvidenceBundle for PRANA-AI."""
     snapshot = build_air_snapshot(raw_payload, current_hour=current_hour)
     routine_plan, base_dose, opt_dose, dose_subs = _schedule_activities(req, snapshot)
     dose_avoided = round(base_dose - opt_dose, 2)
@@ -916,16 +1310,24 @@ def build_evidence_bundle(
         reduction_pct=reduction_pct,
         cigarettes_avoided=cigs_avoided,
         label="Modeled Estimate",
-        formula_summary="D (ug) = (C_out * kappa_microenv) * V_E * dt_hr * (1 - eta_mask); Cigarettes = Delta D / 330 ug",
+        formula_summary=(
+            "D (ug) = sum_h (C_h * kappa * V_E * dt_h) * (1 - eta); Cigarettes = Delta D / 330 ug"
+        ),
         substitutions=dose_subs,
-        limitations="Modeled exposure proxy using gridded Open-Meteo outdoor PM2.5, USEPA breathing rates, and lab mask/microenvironment factors—not a wearable sensor reading.",
+        limitations=(
+            "Modeled exposure proxy integrating gridded Open-Meteo outdoor PM2.5, USEPA breathing "
+            "rates, and lab filtration/microenvironment factors—not a personal monitor reading."
+        ),
     )
 
     sanctuary_plan = score_sanctuary(req, snapshot)
     emit_less = compute_emit_less(req)
     profile_summary = build_profile_risk_summary(req, snapshot, breathe_less, emit_less)
+    metrics, grounded_list = _collect_grounded_metrics(
+        snapshot, routine_plan, sanctuary_plan, breathe_less, emit_less, profile_summary
+    )
 
-    bundle = EvidenceBundle(
+    return EvidenceBundle(
         app_name="PRANA-AI",
         city=snapshot.city,
         city_name=snapshot.city_name,
@@ -941,6 +1343,6 @@ def build_evidence_bundle(
         breathe_less=breathe_less,
         emit_less=emit_less,
         profile_summary=profile_summary,
+        grounded_metrics=metrics,
+        grounded_numbers=grounded_list,
     )
-    bundle.grounded_numbers = _collect_grounded_numbers(bundle)
-    return bundle

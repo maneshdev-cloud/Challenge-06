@@ -1,4 +1,4 @@
-const CACHE_VERSION = "prana-ai-shell-v1";
+const CACHE_VERSION = "prana-ai-shell-v2";
 const PRECACHE_URLS = [
   "/",
   "/index.html",
@@ -33,8 +33,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Never serve stale data for dynamic POST/compute routes
-  if (url.pathname.startsWith("/api/v1/plan") || url.pathname.startsWith("/api/v1/chat") || url.pathname.startsWith("/api/v1/audit-room")) {
+  // Bypass API endpoints so dynamic air/plan/chat/audit responses are never served stale
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/")) {
     return;
   }
 

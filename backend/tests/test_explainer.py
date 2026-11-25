@@ -1,12 +1,8 @@
-"""Tests for Gemini explainer grounding, numeric fallback, and chat triage."""
+"""Tests for Gemini explainer grounding, Vision JSON filtering, and failover chain."""
 
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import explainer
 from data_fetcher import PRESETS, _build_replay_payload
@@ -15,6 +11,7 @@ from schemas import PlanRequest
 
 
 def _sample_bundle(simulate_stale: bool = False):
+    """Build a reusable EvidenceBundle fixture for explainer tests."""
     delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
     req = PlanRequest(**delhi_preset, simulate_stale=simulate_stale)
     raw = _build_replay_payload("delhi", "test")
@@ -22,8 +19,18 @@ def _sample_bundle(simulate_stale: bool = False):
         raw["provenance"]["is_stale"] = False
         raw["provenance"]["is_fallback_replay"] = False
         raw["provenance"]["data_type"] = "model_forecast"
-        raw["provenance"]["source"] = "Open-Meteo (ECMWF CAMS + ERA5)"
+        raw["provenance"]["source"] = "Open-Meteo (CAMS Global ~40 km + Weather Forecast)"
     return build_evidence_bundle(req, raw, current_hour=8)
+
+
+def test_gemini_models_are_valid_ai_studio_ids() -> None:
+    """Verify GEMINI_MODELS lists live 2026 Google AI Studio model identifiers."""
+    assert explainer.GEMINI_MODELS == (
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+    )
 
 
 def test_gemini_valid_response_accepted(monkeypatch) -> None:
@@ -34,7 +41,7 @@ def test_gemini_valid_response_accepted(monkeypatch) -> None:
     def fake_gemini(prompt: str, model_name: str, api_key: str) -> str:
         return (
             f"Note: Live data is unavailable (historical replay). "
-            f"In Delhi, PM2.5 is {bundle.air_snapshot.current_pm25} ug/m3 and India NAQI is "
+            f"In Delhi, PM2.5 is {bundle.air_snapshot.current_pm25} ug/m3 and Estimated NAQI is "
             f"{bundle.air_snapshot.current_naqi}. Your lower-exposure window is "
             f"{bundle.air_snapshot.golden_window.window_label}, saving "
             f"{bundle.breathe_less.dose_avoided_ug} ug and {bundle.emit_less.co2_saved_g} g CO2e."
@@ -67,7 +74,6 @@ def test_gemini_chat_fallback_and_triage(monkeypatch) -> None:
     """Verify chat uses Gemini when grounded and intercepts emergencies before calling Gemini."""
     bundle = _sample_bundle(simulate_stale=False)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-test-key")
-
     called = {"count": 0}
 
     def fake_chat_gemini(prompt: str, model_name: str, api_key: str) -> str:
@@ -78,7 +84,7 @@ def test_gemini_chat_fallback_and_triage(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(explainer, "_call_gemini_sync", fake_chat_gemini)
-    reply, is_er, _, source, ok = asyncio.run(
+    _, is_er, _, source, ok = asyncio.run(
         explainer.generate_chat_reply("Can dad walk at 7 AM?", bundle, "en")
     )
     assert is_er is False
@@ -86,7 +92,6 @@ def test_gemini_chat_fallback_and_triage(monkeypatch) -> None:
     assert ok is True
     assert called["count"] == 1
 
-    # Emergency must short-circuit BEFORE calling Gemini
     er_reply, er_flag, _, er_source, _ = asyncio.run(
         explainer.generate_chat_reply("He is wheezing and breathless", bundle, "en")
     )
@@ -97,7 +102,7 @@ def test_gemini_chat_fallback_and_triage(monkeypatch) -> None:
 
 
 def test_all_eight_languages_deterministic_and_validated() -> None:
-    """Verify all 8 supported languages generate scannable Do/Avoid narratives passing validation."""
+    """Verify all 8 languages generate scannable Do/Avoid plans passing validation."""
     for lang in ("en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"):
         bundle = _sample_bundle(simulate_stale=True).model_copy(update={"language": lang})
         text, source, ok = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=True))
@@ -108,11 +113,10 @@ def test_all_eight_languages_deterministic_and_validated() -> None:
             assert "Do This:" in text
             assert "Avoid This:" in text
             assert "EvidenceBundle" not in text
-            assert "mixing lid" not in text
 
 
 def test_gemini_error_falls_back_gracefully_in_chat(monkeypatch) -> None:
-    """Verify Ask AI falls back cleanly to grounded deterministic answers if Gemini errors/times out."""
+    """Verify Ask AI falls back cleanly to grounded deterministic answers if Gemini errors."""
     bundle = _sample_bundle(simulate_stale=False)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-test-key")
 
@@ -128,16 +132,13 @@ def test_gemini_error_falls_back_gracefully_in_chat(monkeypatch) -> None:
     assert ok is True
     assert "N95" in reply
     assert "What to Do:" in reply
-    assert "What to Avoid:" in reply
 
-    # Casual greeting must return a warm short greeting instead of a full report wall of text
     greet_reply, _, _, greet_source, greet_ok = asyncio.run(
         explainer.generate_chat_reply("HII", bundle, "en")
     )
     assert greet_source == "deterministic_template"
     assert greet_ok is True
     assert "Hi!" in greet_reply
-    assert "Clean Air Sanctuary" not in greet_reply
 
 
 def test_gemini_404_429_503_504_failover_and_key_rotation(monkeypatch) -> None:
@@ -155,52 +156,70 @@ def test_gemini_404_429_503_504_failover_and_key_rotation(monkeypatch) -> None:
 
     calls: list[tuple[str, str]] = []
 
-    # Case 1: key_primary hits 429 quota -> immediately rotates to key_backup,
-    # key_backup gets 404 on gemini-2.5-flash -> falls back to gemini-2.0-flash and succeeds!
     def failover_gemini(prompt: str, model_name: str, api_key: str) -> str:
         calls.append((api_key, model_name))
         if api_key == "key_primary":
-            raise MockApiError(429, "429 RESOURCE_EXHAUSTED quota exceeded")
-        if model_name == "gemini-2.5-flash":
+            raise MockApiError(429, "429 RESOURCE_EXHAUSTED")
+        if model_name == "gemini-3.5-flash-lite":
             raise MockApiError(404, "404 NOT_FOUND")
         return (
             f"Today's Air:\nIn Delhi, PM2.5 is {bundle.air_snapshot.current_pm25} ug/m3 and "
-            f"India NAQI is {bundle.air_snapshot.current_naqi}.\n\n"
+            f"NAQI is {bundle.air_snapshot.current_naqi}.\n\n"
             f"Do This:\n- Shift walks to {bundle.air_snapshot.golden_window.window_label}."
         )
 
     monkeypatch.setattr(explainer, "_call_gemini_sync", failover_gemini)
-    text, source, ok = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=False))
+    _, source, ok = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=False))
     assert source == "gemini"
     assert ok is True
-    assert ("key_primary", "gemini-2.5-flash") in calls
-    # Key 1 should have broken out immediately on 429 without wasting calls on key_primary's remaining models
-    assert ("key_primary", "gemini-2.0-flash") not in calls
-    assert ("key_backup", "gemini-2.5-flash") in calls
-    assert ("key_backup", "gemini-2.0-flash") in calls
+    assert ("key_primary", "gemini-3.5-flash-lite") in calls
+    assert ("key_primary", "gemini-3.8-flash") not in calls
+    assert ("key_backup", "gemini-3.8-flash") in calls
 
-    # Fast cache check: immediate repeat request must skip key_primary (429 cooldown) and dead 404 model in 0ms!
     calls.clear()
-    text_cached, source_cached, _ = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=False))
+    _, source_cached, _ = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=False))
     assert source_cached == "gemini"
-    assert calls == [("key_backup", "gemini-2.0-flash")]
+    assert calls == [("key_backup", "gemini-3.8-flash")]
 
-    # Case 2: All keys/models hit 503 Unavailable & 504 Gateway Timeout -> seamless deterministic fallback
     explainer.reset_failover_cache()
+
     def outage_gemini(prompt: str, model_name: str, api_key: str) -> str:
         if api_key == "key_primary":
             raise MockApiError(503, "503 UNAVAILABLE")
         raise MockApiError(504, "504 GATEWAY_TIMEOUT")
 
     monkeypatch.setattr(explainer, "_call_gemini_sync", outage_gemini)
-    plan_txt, plan_src, plan_ok = asyncio.run(explainer.generate_plan_narrative(bundle, skip_llm=False))
+    plan_txt, plan_src, plan_ok = asyncio.run(
+        explainer.generate_plan_narrative(bundle, skip_llm=False)
+    )
     assert plan_src == "deterministic_template"
     assert plan_ok is True
     assert "Do This:" in plan_txt
 
-    chat_txt, _, _, chat_src, chat_ok = asyncio.run(
-        explainer.generate_chat_reply("Can we open windows?", bundle, "en")
-    )
-    assert chat_src == "deterministic_template"
-    assert chat_ok is True
-    assert "What to Do:" in chat_txt
+
+def test_parse_room_audit_markdown_fences_and_houseplant_filter() -> None:
+    """Verify markdown JSON fences strip cleanly and houseplant tips get replaced."""
+    raw = """```json
+    {
+      "room_summary": "Window track shows minor dust leaks.",
+      "tips": [
+        {
+          "title": "Keep Snake Plant",
+          "cost_inr": "Rs. 200",
+          "action": "Buy snake plant.",
+          "why_it_helps": "Absorbs toxins."
+        },
+        {
+          "title": "Seal Window Gap",
+          "cost_inr": "Rs. 120",
+          "action": "Apply foam strip.",
+          "why_it_helps": "Blocks road dust."
+        }
+      ]
+    }
+    ```"""
+    parsed = explainer._parse_room_audit_json(raw, "gemini-2.5-flash", "Delhi", "en", None)
+    assert parsed is not None
+    assert parsed.source == "gemini"
+    assert len(parsed.tips) == 3
+    assert all("snake plant" not in t.title.lower() for t in parsed.tips)

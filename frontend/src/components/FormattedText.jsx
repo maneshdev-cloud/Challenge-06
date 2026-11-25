@@ -18,50 +18,69 @@ export default function FormattedText({ text, dark = false }) {
   if (!text) return null;
 
   const lines = String(text).split("\n");
-  return (
-    <div className="space-y-1.5 leading-relaxed">
-      {lines.map((rawLine, idx) => {
-        const line = rawLine.trim();
-        if (!line) {
-          return <div key={idx} className="h-1" />;
-        }
+  const blocks = [];
+  let bulletBuffer = [];
 
-        const cleanPlain = line.replace(/\*\*/g, "");
-        const isSectionHeader =
-          cleanPlain.endsWith(":") &&
-          cleanPlain.length <= 42 &&
-          !line.startsWith("-") &&
-          !line.startsWith("*");
-
-        if (isSectionHeader) {
-          return (
-            <p
-              key={idx}
-              className={`pt-1 text-xs font-extrabold uppercase tracking-wider ${
-                dark ? "text-teal-300" : "text-teal-800"
+  function flushBullets(keyPrefix) {
+    if (!bulletBuffer.length) return;
+    blocks.push(
+      <ul key={`ul-${keyPrefix}`} className="space-y-1.5 pl-1">
+        {bulletBuffer.map((itemText, itemIdx) => (
+          <li key={itemIdx} className="flex items-start gap-2">
+            <span
+              aria-hidden="true"
+              className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                dark ? "bg-teal-300" : "bg-teal-600"
               }`}
-            >
-              {cleanPlain}
-            </p>
-          );
-        }
+            />
+            <span>{renderInlineBold(itemText)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+    bulletBuffer = [];
+  }
 
-        if (line.startsWith("- ") || line.startsWith("* ")) {
-          const content = line.slice(2).trim();
-          return (
-            <div key={idx} className="flex items-start gap-2 pl-1">
-              <span
-                className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                  dark ? "bg-teal-300" : "bg-teal-600"
-                }`}
-              />
-              <span>{renderInlineBold(content)}</span>
-            </div>
-          );
-        }
+  lines.forEach((rawLine, idx) => {
+    const line = rawLine.trim();
+    if (!line) {
+      flushBullets(idx);
+      blocks.push(<div key={`gap-${idx}`} className="h-1" />);
+      return;
+    }
 
-        return <p key={idx}>{renderInlineBold(line)}</p>;
-      })}
-    </div>
-  );
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      bulletBuffer.push(line.slice(2).trim());
+      return;
+    }
+
+    flushBullets(idx);
+
+    const cleanPlain = line.replace(/\*\*/g, "");
+    const isSectionHeader =
+      cleanPlain.endsWith(":") &&
+      cleanPlain.length <= 42 &&
+      !line.startsWith("-") &&
+      !line.startsWith("*");
+
+    if (isSectionHeader) {
+      blocks.push(
+        <p
+          key={`hdr-${idx}`}
+          className={`pt-1 text-xs font-extrabold uppercase tracking-wider ${
+            dark ? "text-teal-300" : "text-teal-800"
+          }`}
+        >
+          {cleanPlain}
+        </p>
+      );
+      return;
+    }
+
+    blocks.push(<p key={`p-${idx}`}>{renderInlineBold(line)}</p>);
+  });
+
+  flushBullets("end");
+
+  return <div className="space-y-1.5 leading-relaxed">{blocks}</div>;
 }
