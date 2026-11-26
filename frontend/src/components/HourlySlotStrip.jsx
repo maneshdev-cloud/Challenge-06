@@ -153,8 +153,8 @@ export default function HourlySlotStrip({ airSnapshot, profileSummary }) {
 
   return (
     <div className="mt-5 border-t border-slate-100 pt-4">
-      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="mb-2.5 flex items-start justify-between gap-2 sm:items-center">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
           <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-700">
             Hour-by-Hour Air (6 AM – 10 PM)
           </h3>
@@ -176,7 +176,7 @@ export default function HourlySlotStrip({ airSnapshot, profileSummary }) {
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             disabled={!canScrollLeft}
@@ -214,24 +214,33 @@ export default function HourlySlotStrip({ airSnapshot, profileSummary }) {
               aria-pressed={isSelected}
               aria-label={`${formatHourAmPm(pt.hour)}, ${meta.status}, PM2.5 ${pt.pm2_5} ug/m3, Est. AQI ${pt.cpcb_naqi}`}
               onClick={() => setSelectedHour(pt.hour)}
-              className={`flex w-32 shrink-0 snap-start flex-col justify-between rounded-2xl bg-gradient-to-b ${meta.cardTint} p-2.5 text-left ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${isSelected ? meta.selectedRing : "hover:brightness-95"
-                }`}
+              className={`flex w-40 shrink-0 snap-start flex-col justify-between overflow-hidden rounded-2xl bg-gradient-to-b ${meta.cardTint} p-3 text-left ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
+                isSelected ? meta.selectedRing : "hover:brightness-95"
+              }`}
             >
-              <div className="flex items-center justify-between gap-1">
+              <div className="flex w-full items-center justify-between gap-1.5">
                 <span className="whitespace-nowrap font-mono text-xs font-extrabold text-slate-900">
                   {shortTime}
                 </span>
-                <span className={`whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-bold ${meta.pillCls}`}>
+                <span
+                  className={`shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-bold ${meta.pillCls}`}
+                >
                   {meta.status}
                 </span>
               </div>
 
-              <div className="mt-2 whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-800">
-                <span className="font-bold text-slate-950">{pt.pm2_5}</span> ug • AQI{" "}
-                <span className="font-bold">{pt.cpcb_naqi}</span>
+              <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-1.5 gap-y-0.5 font-mono text-[11px] tabular-nums text-slate-800">
+                <span className="whitespace-nowrap">
+                  <strong className="text-slate-950">{pt.pm2_5}</strong> ug/m3
+                </span>
+                <span className="whitespace-nowrap">
+                  AQI <strong className="text-slate-950">{pt.cpcb_naqi}</strong>
+                </span>
               </div>
 
-              <p className="mt-1 whitespace-nowrap text-[11px] font-semibold text-slate-800">{meta.cue}</p>
+              <p className="mt-1.5 text-[11px] font-semibold leading-tight text-slate-800">
+                {meta.cue}
+              </p>
             </button>
           );
         })}
@@ -243,8 +252,9 @@ export default function HourlySlotStrip({ airSnapshot, profileSummary }) {
           className="mt-2.5 flex items-start gap-2 rounded-2xl bg-slate-900 px-3.5 py-2.5 text-xs text-slate-100"
         >
           <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-teal-300" aria-hidden="true" />
-          <span>
-            <strong className="text-white">{formatHourAmPm(activePt.hour)}:</strong> {activeMeta.detail}
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <strong className="text-white">{formatHourAmPm(activePt.hour)}:</strong>{" "}
+            {activeMeta.detail}
           </span>
         </div>
       )}
