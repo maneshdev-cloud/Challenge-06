@@ -798,3 +798,38 @@ def test_occupied_slot_prevents_monotone_rollback_overlap() -> None:
     by_id = {item.id: item for item in bundle.routine_plan}
     assert by_id["fixed_shift"].recommended_hour == 8
     assert by_id["overlapping_walk"].recommended_hour not in {8, 9, 10}
+
+
+def test_adults_flat_satisfactory_day_avoids_exceeds_threshold_headline() -> None:
+    """Flat day under adult threshold (NAQI <= 150) must not claim smog exceeds adult threshold."""
+    raw = build_replay_payload("mumbai", "test")
+    raw["hourly_raw"]["pm2_5"] = [54.5] * 24
+    raw["hourly_raw"]["pm2_5"][0] = 62.0  # makes is_clean_air_day=False while flat daytime curve
+    raw["hourly_raw"]["pm10"] = [90.0] * 24
+
+    req = PlanRequest(
+        city="mumbai",
+        user_category="adults_commuters",
+        budget_tier="rs_0",
+        commute_mode="car_petrol_solo",
+        target_commute_mode="electric_metro",
+        commute_km=16.0,
+        members=[HouseholdMember(name="Adult", age=32, conditions=["adult"])],
+        activities=[
+            ActivityItem(
+                id="commute",
+                name="Office Commute",
+                flexibility="fixed",
+                planned_hour=9,
+                duration_min=60,
+                activity_level="brisk_walk",
+                member_name="Adult",
+                is_commute=True,
+            )
+        ],
+    )
+    bundle = build_evidence_bundle(req, raw, current_hour=10)
+    assert bundle.air_snapshot.current_naqi <= 150
+    assert bundle.profile_summary is not None
+    assert bundle.profile_summary.warning_active is False
+    assert "exceeds adult threshold" not in bundle.profile_summary.tailored_hero_headline.lower()

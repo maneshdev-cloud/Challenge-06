@@ -152,11 +152,13 @@ def build_profile_risk_summary(
 
     tpl = CONSTANTS["profile_copy_templates"][key]
     band_idx = 0 if snapshot.current_naqi > 200 else (1 if warning_active else 2)
-    headline_key = (
-        "clean"
-        if snapshot.golden_window.is_clean_air_day
-        else ("window" if snapshot.golden_window.has_meaningful_window else "flat")
-    )
+    gw = snapshot.golden_window
+    if gw.is_clean_air_day or (band_idx == 2 and not gw.has_meaningful_window):
+        headline_key = "clean"
+    elif gw.has_meaningful_window:
+        headline_key = "window"
+    else:
+        headline_key = "flat"
     ctx = _profile_copy_context(
         snapshot,
         breathe_less,

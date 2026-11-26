@@ -47,12 +47,12 @@ export default function PersonaBar({
   return (
     <section
       aria-label="User category and quick demo presets"
-      className="flex flex-wrap items-center justify-between gap-2"
+      className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
     >
       <div
         role="group"
         aria-label="Household profile category"
-        className="no-scrollbar flex flex-1 items-center gap-2 overflow-x-auto pb-1"
+        className="flex flex-wrap items-center gap-1.5 sm:flex-1 sm:gap-2"
       >
         {USER_CATEGORIES.map(({ id, label, Icon }) => {
           const isActive = activeCategoryId === id;
@@ -62,7 +62,7 @@ export default function PersonaBar({
               type="button"
               aria-pressed={isActive}
               onClick={() => onSelectCategory(id)}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:px-3.5 sm:py-2 ${
                 isActive
                   ? "bg-gradient-to-r from-slate-900 to-teal-900 text-white shadow-sm"
                   : "bg-white text-slate-700 shadow-sm ring-1 ring-slate-200/80 hover:bg-teal-50/60"
@@ -78,7 +78,7 @@ export default function PersonaBar({
         })}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center justify-end gap-2">
         <div ref={presetRef} className="relative">
           <button
             type="button"

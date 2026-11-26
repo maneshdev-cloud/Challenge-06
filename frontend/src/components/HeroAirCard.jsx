@@ -183,7 +183,11 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
             </div>
           </div>
           {prof.warning_banner && (
-            <p className="mt-2 flex items-start gap-1.5 rounded-xl bg-black/25 px-3 py-2 text-xs font-semibold leading-snug text-white">
+            <p
+              className={`mt-2 flex items-start gap-1.5 border-l-2 pl-2.5 text-xs font-semibold leading-snug text-white ${
+                prof.warning_active ? "border-amber-300" : "border-white/40"
+              }`}
+            >
               {prof.warning_active && (
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
               )}
@@ -226,7 +230,7 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
             </span>
           )}
           {el.tailpipe_pm25_saved_mg > 0 && (
-            <span className="hidden whitespace-nowrap text-[11px] font-semibold text-white/95 sm:inline">
+            <span className="inline-flex whitespace-nowrap text-[11px] font-semibold text-white/95">
               • {el.tailpipe_pm25_saved_mg} mg less street soot
             </span>
           )}
