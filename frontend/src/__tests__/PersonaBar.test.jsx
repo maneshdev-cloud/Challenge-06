@@ -40,6 +40,11 @@ describe("PersonaBar", () => {
     await user.click(presetBtn);
     expect(presetBtn).toHaveAttribute("aria-expanded", "true");
 
+    const menu = screen.getByRole("menu", { name: /1-Click Benchmark Personas/i });
+    expect(menu.className).toContain("left-0");
+    expect(menu.className).toContain("sm:right-0");
+    expect(menu.className).toContain("sm:left-auto");
+
     await user.click(screen.getByRole("menuitem", { name: /Delhi Household/i }));
     expect(onSelectPreset).toHaveBeenCalledWith(PRESETS[0]);
     expect(presetBtn).toHaveAttribute("aria-expanded", "false");

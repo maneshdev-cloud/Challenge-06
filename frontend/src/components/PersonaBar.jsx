@@ -85,7 +85,7 @@ export default function PersonaBar({
             aria-expanded={presetOpen}
             aria-haspopup="menu"
             onClick={() => setPresetOpen((v) => !v)}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-900 ring-1 ring-teal-200/80 transition hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto"
+            className="inline-flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-teal-50 px-2.5 py-2 text-xs font-semibold text-teal-900 ring-1 ring-teal-200/80 transition hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto sm:px-3"
           >
             <Sparkles className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
             <span className="hidden sm:inline">Quick Demo Presets</span>
@@ -97,7 +97,7 @@ export default function PersonaBar({
             <div
               role="menu"
               aria-label="1-Click Benchmark Personas"
-              className="absolute right-0 top-11 z-40 w-72 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl"
+              className="absolute left-0 top-full z-40 mt-2 w-[min(calc(100vw-2.5rem),22rem)] rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl sm:left-auto sm:right-0 sm:w-72"
             >
               <p className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
                 1-Click Benchmark Personas
@@ -137,7 +137,7 @@ export default function PersonaBar({
         <button
           type="button"
           onClick={onOpenCustomizer}
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200/80 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto"
+          className="inline-flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200/80 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto sm:px-3.5"
         >
           <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
           <span>Edit Household</span>
