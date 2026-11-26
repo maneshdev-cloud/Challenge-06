@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CATEGORY_TEMPLATES, FALLBACK_CITIES } from "../data/constants";
+import { CATEGORY_TEMPLATES, FALLBACK_CITIES, HOUSEHOLD_STORAGE_KEY } from "../data/constants";
 import {
   clearSavedHousehold,
   createInitialPlanState,
@@ -70,6 +70,35 @@ describe("planReducer and household persistence", () => {
 
     clearSavedHousehold();
     expect(loadSavedHousehold()).toBeNull();
+
+    // Malformed JSON and non-object shapes recover safely and clear storage
+    localStorage.setItem(HOUSEHOLD_STORAGE_KEY, "{broken-json");
+    expect(loadSavedHousehold()).toBeNull();
+    expect(localStorage.getItem(HOUSEHOLD_STORAGE_KEY)).toBeNull();
+
+    localStorage.setItem(HOUSEHOLD_STORAGE_KEY, JSON.stringify(["not-an-object"]));
+    expect(loadSavedHousehold()).toBeNull();
+
+    localStorage.setItem(
+      HOUSEHOLD_STORAGE_KEY,
+      JSON.stringify({
+        city: "delhi",
+        language: "invalid_lang",
+        user_category: "unknown_cat",
+        lat: 28.6,
+        members: "broken",
+        activities: [{ id: "bad", name: "x" }]
+      })
+    );
+    const recovered = loadSavedHousehold();
+    expect(recovered).toEqual({
+      city: "delhi",
+      area_name: null,
+      state: null,
+      lat: null,
+      lon: null,
+      language: "en"
+    });
   });
 });
 

@@ -162,17 +162,36 @@ def _call_gemini_vision_sync(
     )
 
 
+_COORD_PAIR_RE = re.compile(r"\s*\(-?\d+\.\d+,\s*-?\d+\.\d+\)")
+
+
 def serialize_evidence_for_llm(bundle: EvidenceBundle) -> str:
-    """Serialize compact air, schedule, and ledger facts without PII names or raw hourly arrays."""
+    """Serialize compact air, schedule, and ledger facts without PII, custom labels, or coords."""
     member_aliases: dict[str, str] = {}
     routine_items = []
-    for item in bundle.routine_plan:
+    for idx, item in enumerate(bundle.routine_plan, 1):
         raw_name = item.member_name.strip() or "Member"
         if raw_name not in member_aliases:
             member_aliases[raw_name] = f"Household Member {len(member_aliases) + 1}"
         dumped = item.model_dump(mode="json", include=_ROUTINE_LLM_FIELDS)
         dumped["member_name"] = member_aliases[raw_name]
+        dumped["name"] = f"Task {idx} ({item.flexibility})"
         routine_items.append(dumped)
+
+    sanctuary = bundle.sanctuary_plan.model_dump(mode="json", exclude={"applicable_hacks": True})
+    room_aliases: dict[str, str] = {}
+    for idx, r in enumerate(sanctuary.get("room_scores", []), 1):
+        raw_room = str(r.get("name") or f"Room {idx}")
+        alias = "Sanctuary Room" if r.get("is_sanctuary") else f"Room {idx}"
+        room_aliases[raw_room] = alias
+        r["name"] = alias
+        r.pop("reason", None)
+    sanctuary["sanctuary_room"] = room_aliases.get(
+        str(sanctuary.get("sanctuary_room") or ""), "Sanctuary Room"
+    )
+
+    provenance = bundle.provenance.model_dump(mode="json")
+    provenance["spatial_note"] = _COORD_PAIR_RE.sub("", str(provenance.get("spatial_note") or ""))
 
     compact = {
         "app_name": bundle.app_name,
@@ -181,12 +200,12 @@ def serialize_evidence_for_llm(bundle: EvidenceBundle) -> str:
         "area_name": bundle.area_name,
         "language": bundle.language,
         "budget_tier": bundle.budget_tier,
-        "provenance": bundle.provenance.model_dump(mode="json"),
-        "air_snapshot": bundle.air_snapshot.model_dump(mode="json", exclude={"hourly": True}),
-        "routine_plan": routine_items,
-        "sanctuary_plan": bundle.sanctuary_plan.model_dump(
-            mode="json", exclude={"applicable_hacks": True}
+        "provenance": provenance,
+        "air_snapshot": bundle.air_snapshot.model_dump(
+            mode="json", exclude={"hourly": True, "lat": True, "lon": True}
         ),
+        "routine_plan": routine_items,
+        "sanctuary_plan": sanctuary,
         "breathe_less": bundle.breathe_less.model_dump(
             mode="json", exclude={"substitutions": True, "limitations": True}
         ),

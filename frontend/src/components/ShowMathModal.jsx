@@ -41,10 +41,11 @@ export default function ShowMathModal({ open, onClose, bundle }) {
           <p className="mt-1 text-slate-700">
             Modeled PM2.5 ({air_snapshot.current_pm25} ug/m3) and Estimated Hourly India CPCB NAQI (
             {air_snapshot.current_naqi} • {air_snapshot.current_category}, dominant pollutant:{" "}
-            {air_snapshot.dominant_pollutant}) are mapped separately via CPCB linear breakpoints from
-            satellite-assimilated CAMS Global forecasts (official CPCB NAQI is a 24-hour station
-            running average). Morning Planetary Boundary Layer Height (PBLH) ceiling:{" "}
-            <strong>{air_snapshot.morning_inversion_ceiling_m} m</strong> (
+            {air_snapshot.dominant_pollutant}) are mapped separately via CPCB linear breakpoints across{" "}
+            <strong>3 of 8 CPCB criteria pollutants</strong> (PM2.5, PM10, NO2; excludes SO2, CO,
+            O3, NH3, Pb) using satellite-assimilated CAMS Global forecasts (official CPCB NAQI is a
+            24-hour station running average). Morning Planetary Boundary Layer Height (PBLH)
+            ceiling: <strong>{air_snapshot.morning_inversion_ceiling_m} m</strong> (
             {air_snapshot.meteorology_regime}).
           </p>
         </div>

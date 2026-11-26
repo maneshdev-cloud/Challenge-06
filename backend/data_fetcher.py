@@ -401,7 +401,8 @@ def _build_replay_provenance(
         "spatial_resolution": SPATIAL_RES_REPLAY,
         "spatial_note": (
             f"{reason}. Showing nearest regional historical winter replay "
-            f"({feat_name} proxy) for {loc_label} instead of live forecast."
+            f"({feat_name} proxy) for {loc_label} instead of live forecast "
+            "(3 of 8 CPCB criteria pollutants: PM2.5, PM10, NO2; excludes SO2, CO, O3, NH3, Pb)."
         ),
     }
 
@@ -589,7 +590,8 @@ def _build_live_provenance(
     loc_desc = ", ".join(dict.fromkeys(loc_parts))
     base_note = (
         f"Pan-India Open-Meteo CAMS Global (~40 km, 3-hourly interpolated) + Weather Forecast "
-        f"for {loc_desc} ({loc['lat']:.3f}, {loc['lon']:.3f}); not a doorstep CPCB monitor."
+        f"for {loc_desc} ({loc['lat']:.3f}, {loc['lon']:.3f}); not a doorstep CPCB monitor "
+        "(3 of 8 CPCB criteria pollutants: PM2.5, PM10, NO2; excludes SO2, CO, O3, NH3, Pb)."
     )
     if is_partial:
         source_lbl = "Open-Meteo (CAMS Global + NWP, partial fallback)"

@@ -631,3 +631,73 @@ def test_user_category_mask_sensitivity_coastal_regime_and_co2_note() -> None:
     coastal_points = inland_snap.hourly
     _, coastal_regime = classify_meteorology_regime(coastal_points, is_coastal=True)
     assert coastal_regime == "Active Daytime / Sea-Breeze Dispersion"
+
+
+def test_non_overlapping_per_member_scheduling_preserves_other_members() -> None:
+    """Same member must not overlap fixed or flexible slots; another member may reuse best hour."""
+    raw = build_replay_payload("delhi", "test")
+    # Make hour 14 strictly cleanest, hour 13 second cleanest
+    raw["hourly_raw"]["pm2_5"] = [120.0] * 24
+    raw["hourly_raw"]["pm2_5"][14] = 35.0
+    raw["hourly_raw"]["pm2_5"][13] = 45.0
+    raw["hourly_raw"]["pm2_5"][15] = 55.0
+
+    req = PlanRequest(
+        city="delhi",
+        budget_tier="under_500",
+        members=[
+            HouseholdMember(name="Rohan", age=28, conditions=["adult"]),
+            HouseholdMember(name="Meera", age=30, conditions=["adult"]),
+        ],
+        activities=[
+            ActivityItem(
+                id="rohan_fixed",
+                name="Fixed Noon Errand",
+                flexibility="fixed",
+                planned_hour=14,
+                duration_min=60,
+                member_name="Rohan",
+            ),
+            ActivityItem(
+                id="rohan_walk_1",
+                name="Walk 1",
+                flexibility="flexible",
+                planned_hour=7,
+                duration_min=60,
+                member_name="Rohan",
+            ),
+            ActivityItem(
+                id="rohan_walk_2",
+                name="Walk 2",
+                flexibility="flexible",
+                planned_hour=18,
+                duration_min=60,
+                member_name="Rohan",
+            ),
+            ActivityItem(
+                id="meera_walk",
+                name="Meera Walk",
+                flexibility="flexible",
+                planned_hour=8,
+                duration_min=45,
+                member_name="Meera",
+            ),
+        ],
+    )
+    bundle = build_evidence_bundle(req, raw, current_hour=6)
+    by_id = {item.id: item for item in bundle.routine_plan}
+    assert [item.id for item in bundle.routine_plan] == [
+        "rohan_fixed",
+        "rohan_walk_1",
+        "rohan_walk_2",
+        "meera_walk",
+    ]
+    assert by_id["rohan_fixed"].recommended_hour == 14
+    rohan_hours = {
+        by_id["rohan_fixed"].recommended_hour,
+        by_id["rohan_walk_1"].recommended_hour,
+        by_id["rohan_walk_2"].recommended_hour,
+    }
+    assert len(rohan_hours) == 3
+    assert rohan_hours == {13, 14, 15}
+    assert by_id["meera_walk"].recommended_hour == 14

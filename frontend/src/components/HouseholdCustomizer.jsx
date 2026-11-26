@@ -147,7 +147,7 @@ export default function HouseholdCustomizer({
                 onChange={(e) =>
                   onUpdateConfig({ ...planConfig, preset_id: null, budget_tier: e.target.value })
                 }
-                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-teal-600 focus:outline-none"
+                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               >
                 <option value="rs_0">Rs 0 (Free Home Habits Only)</option>
                 <option value="under_500">Under Rs 500 (N95 Mask + Window Seal Tape)</option>
@@ -200,7 +200,7 @@ export default function HouseholdCustomizer({
               value={newMemberName}
               onChange={(e) => setNewMemberName(e.target.value)}
               placeholder="Member name (e.g., Rohan)"
-              className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs placeholder:text-slate-500 focus:border-teal-600 focus:outline-none"
+              className="min-w-[140px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs placeholder:text-slate-500 focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
             />
             <label htmlFor="new-member-age" className="sr-only">
               New member age
@@ -212,7 +212,7 @@ export default function HouseholdCustomizer({
               max={110}
               value={newMemberAge}
               onChange={(e) => setNewMemberAge(e.target.value)}
-              className="w-16 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"
+              className="w-16 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               title="Age"
             />
             <label htmlFor="new-member-condition" className="sr-only">
@@ -222,7 +222,7 @@ export default function HouseholdCustomizer({
               id="new-member-condition"
               value={newMemberCond}
               onChange={(e) => setNewMemberCond(e.target.value)}
-              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
             >
               {CONDITIONS.map((c) => (
                 <option key={c.key} value={c.key}>
@@ -280,7 +280,7 @@ export default function HouseholdCustomizer({
               value={newActName}
               onChange={(e) => setNewActName(e.target.value)}
               placeholder="e.g., Tuition drop-off or Evening walk"
-              className="min-w-[150px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs placeholder:text-slate-500 focus:border-teal-600 focus:outline-none"
+              className="min-w-[150px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs placeholder:text-slate-500 focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
             />
             <label htmlFor="new-activity-member" className="sr-only">
               Assigned household member
@@ -289,7 +289,7 @@ export default function HouseholdCustomizer({
               id="new-activity-member"
               value={newActMember || planConfig.members[0]?.name || ""}
               onChange={(e) => setNewActMember(e.target.value)}
-              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
             >
               {planConfig.members.map((m) => (
                 <option key={m.name} value={m.name}>
@@ -304,7 +304,7 @@ export default function HouseholdCustomizer({
               id="new-activity-flexibility"
               value={newActFlex}
               onChange={(e) => setNewActFlex(e.target.value)}
-              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"
+              className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
             >
               <option value="flexible">Flexible</option>
               <option value="fixed">Fixed</option>
@@ -319,7 +319,7 @@ export default function HouseholdCustomizer({
               max={23}
               value={newActHour}
               onChange={(e) => setNewActHour(e.target.value)}
-              className="w-16 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"
+              className="w-16 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold focus:border-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               title="Planned Hour (0-23)"
             />
             <button

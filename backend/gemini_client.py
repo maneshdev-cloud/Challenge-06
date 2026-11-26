@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -16,6 +17,7 @@ from google.genai import types
 __all__ = [
     "GEMINI_MODELS",
     "KEY_429_COOLDOWN_SECONDS",
+    "MAX_CONCURRENT_GEMINI_CALLS",
     "MODEL_404_TTL_SECONDS",
     "PLACEHOLDER_KEY",
     "call_gemini_sync",
@@ -41,10 +43,24 @@ GEMINI_MODELS = (
 PLACEHOLDER_KEY = "your_google_ai_studio_key_here"
 MODEL_404_TTL_SECONDS = 600.0
 KEY_429_COOLDOWN_SECONDS = 45.0
+MAX_CONCURRENT_GEMINI_CALLS = 8
 
 _CLIENT_CACHE: dict[str, genai.Client] = {}
 _MODEL_UNAVAILABLE_UNTIL: dict[tuple[str, str], float] = {}
 _KEY_COOLDOWN_UNTIL: dict[str, float] = {}
+_LOOP_SEMAPHORES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _get_gemini_semaphore() -> asyncio.Semaphore:
+    """Return a bounded asyncio.Semaphore scoped cleanly to the active event loop."""
+    loop = asyncio.get_running_loop()
+    sem = _LOOP_SEMAPHORES.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(MAX_CONCURRENT_GEMINI_CALLS)
+        _LOOP_SEMAPHORES[loop] = sem
+    return sem
 
 
 def reset_failover_cache() -> None:
@@ -173,6 +189,17 @@ def record_gemini_failure(api_key: str, model_name: str, key_idx: int, exc: Exce
     return False
 
 
+async def _invoke_bounded(
+    sem: asyncio.Semaphore,
+    invoke_sync: Callable[[str, str], str],
+    model_name: str,
+    api_key: str,
+) -> str:
+    """Acquire bounded concurrency slot and execute synchronous Gemini SDK call."""
+    async with sem:
+        return await asyncio.to_thread(invoke_sync, model_name, api_key)
+
+
 async def _try_models_for_key(
     api_key: str,
     key_idx: int,
@@ -181,6 +208,7 @@ async def _try_models_for_key(
     postprocess: Callable[[str, str], Any],
 ) -> tuple[Any, str | None, bool]:
     """Iterate active models for one API key; third tuple item signals deadline reached."""
+    sem = _get_gemini_semaphore()
     for model_name in GEMINI_MODELS:
         if _MODEL_UNAVAILABLE_UNTIL.get((api_key, model_name), 0.0) > time.monotonic():
             continue
@@ -190,7 +218,7 @@ async def _try_models_for_key(
             return None, None, True
         try:
             raw_text = await asyncio.wait_for(
-                asyncio.to_thread(invoke_sync, model_name, api_key),
+                _invoke_bounded(sem, invoke_sync, model_name, api_key),
                 timeout=min(8.0, remaining),
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught

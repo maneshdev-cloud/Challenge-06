@@ -44,13 +44,14 @@ class _IntervalQuery:
 
 @dataclass(frozen=True)
 class _ScheduleContext:
-    """Per-plan routing and day-2 forecast context for activity scheduling."""
+    """Per-plan routing, day-2 forecast, and per-member occupied slots."""
 
     base_commute_micro: str
     target_commute_micro: str
     allow_slider: bool
     next_day_pm25: list[float] | None
     next_day_naqi: list[int] | None = None
+    occupied_intervals: tuple[tuple[int, int], ...] = ()
 
 
 def compute_inhaled_dose_ug(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -188,16 +189,28 @@ def compute_interval_dose_ug(  # pylint: disable=too-many-arguments,too-many-pos
     return dose, mean_pm25, mean_naqi
 
 
-def _find_best_start_hour_for_duration(
+def _overlaps_occupied(
+    start_min: int, duration_min: int, occupied: tuple[tuple[int, int], ...]
+) -> bool:
+    """Return True when [start_min, start_min + duration_min) overlaps any occupied window."""
+    end_min = start_min + max(1, duration_min)
+    return any(start_min < occ_end and occ_start < end_min for occ_start, occ_end in occupied)
+
+
+def _best_hour_in_range(
     hourly_points: list[HourlyAirPoint],
     query_template: _IntervalQuery,
+    hour_range: range,
     *,
-    next_day_pm25: list[float] | None = None,
-) -> int:
-    """Optimize flexible start hour across daytime slots via exact duration-integrated dose."""
-    last_start = max(7, 20 - max(1, (query_template.duration_min + 59) // 60))
-    best_start, best_dose = 13, float("inf")
-    for start_h in range(7, last_start + 1):
+    next_day_pm25: list[float] | None,
+    occupied: tuple[tuple[int, int], ...],
+) -> tuple[int | None, float]:
+    """Find lowest-dose start hour in `hour_range` avoiding `occupied` minute intervals."""
+    best_h: int | None = None
+    best_dose = float("inf")
+    for start_h in hour_range:
+        if occupied and _overlaps_occupied(start_h * 60, query_template.duration_min, occupied):
+            continue
         candidate = _IntervalQuery(
             start_h,
             query_template.duration_min,
@@ -209,8 +222,46 @@ def _find_best_start_hour_for_duration(
             hourly_points, candidate, next_day_pm25=next_day_pm25
         )
         if dose < best_dose:
-            best_dose, best_start = dose, start_h
-    return best_start
+            best_dose, best_h = dose, start_h
+    return best_h, best_dose
+
+
+def _find_best_start_hour_for_duration(
+    hourly_points: list[HourlyAirPoint],
+    query_template: _IntervalQuery,
+    *,
+    next_day_pm25: list[float] | None = None,
+    occupied: tuple[tuple[int, int], ...] = (),
+) -> int:
+    """Optimize flexible start hour across daytime slots avoiding occupied member intervals."""
+    last_start = max(7, 20 - max(1, (query_template.duration_min + 59) // 60))
+    free_h, _ = _best_hour_in_range(
+        hourly_points,
+        query_template,
+        range(7, last_start + 1),
+        next_day_pm25=next_day_pm25,
+        occupied=occupied,
+    )
+    if free_h is not None:
+        return free_h
+    if occupied:
+        fallback_h, _ = _best_hour_in_range(
+            hourly_points,
+            query_template,
+            range(6, 22),
+            next_day_pm25=next_day_pm25,
+            occupied=occupied,
+        )
+        if fallback_h is not None:
+            return fallback_h
+    any_h, _ = _best_hour_in_range(
+        hourly_points,
+        query_template,
+        range(7, last_start + 1),
+        next_day_pm25=next_day_pm25,
+        occupied=(),
+    )
+    return any_h if any_h is not None else 13
 
 
 def _is_member_sensitive(member: Any) -> bool:
@@ -447,6 +498,7 @@ def _choose_flexible_outcome(
                 0, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
             ),
             next_day_pm25=ctx.next_day_pm25,
+            occupied=ctx.occupied_intervals,
         )
     )
     _, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
@@ -548,40 +600,88 @@ def _schedule_single_activity(
     return item, base_eval[0], opt_eval[0], sub_text, outcome.used_slider
 
 
+def _select_slider_activity_idx(req: PlanRequest) -> int | None:
+    """Pick the single flexible activity index controlled by the What-If hour slider."""
+    if req.walk_override_hour is None or not req.activities:
+        return None
+    last_idx = len(req.activities) - 1
+    for idx, act in enumerate(req.activities):
+        if act.flexibility == "flexible" and (
+            act.activity_level in PRIMARY_FLEX_LEVELS or idx == last_idx
+        ):
+            return idx
+    for idx, act in enumerate(req.activities):
+        if act.flexibility == "flexible":
+            return idx
+    return None
+
+
+def _scheduling_order(req: PlanRequest, slider_idx: int | None) -> list[int]:
+    """Order fixed tasks first, then slider task, then remaining flexible tasks."""
+    fixed_idxs = [i for i, act in enumerate(req.activities) if act.flexibility == "fixed"]
+    slider_list = [slider_idx] if slider_idx is not None and slider_idx not in fixed_idxs else []
+    flex_idxs = [
+        i for i, act in enumerate(req.activities) if act.flexibility != "fixed" and i != slider_idx
+    ]
+    return [*fixed_idxs, *slider_list, *flex_idxs]
+
+
+def _resolve_commute_micros(req: PlanRequest) -> tuple[str, str]:
+    """Return baseline and target transport microenvironment keys."""
+    arai_map = CONSTANTS["arai_transport_emissions"]
+    base_micro = str(arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])["microenv"])
+    target_micro = str(
+        arai_map.get(req.target_commute_mode, arai_map["electric_metro"])["microenv"]
+    )
+    return base_micro, target_micro
+
+
+def _summarize_schedule_runs(
+    runs: list[tuple[RoutineItemResult, float, float, str, bool] | None],
+) -> tuple[list[RoutineItemResult], float, float, list[str]]:
+    """Aggregate per-activity dosimetry runs into routine totals."""
+    final_runs = [r for r in runs if r is not None]
+    results = [r[0] for r in final_runs]
+    substitutions = [r[3] for r in final_runs]
+    base_total = sum(r[1] for r in final_runs)
+    opt_total = sum(r[2] for r in final_runs)
+    return results, round(base_total, 2), round(opt_total, 2), substitutions
+
+
 def schedule_activities(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
     next_day_pm25: list[float] | None = None,
     next_day_naqi: list[int] | None = None,
 ) -> tuple[list[RoutineItemResult], float, float, list[str]]:
-    """Run constraint-aware scheduling and hourly-integrated USEPA dosimetry."""
-    arai_map = CONSTANTS["arai_transport_emissions"]
-    base_micro = str(arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])["microenv"])
-    target_micro = str(
-        arai_map.get(req.target_commute_mode, arai_map["electric_metro"])["microenv"]
+    """Run non-overlapping per-member scheduling and hourly-integrated USEPA dosimetry."""
+    base_micro, target_micro = _resolve_commute_micros(req)
+    runs: list[tuple[RoutineItemResult, float, float, str, bool] | None] = [None] * len(
+        req.activities
     )
+    occupied_by_member: dict[str, list[tuple[int, int]]] = {}
+    slider_idx = _select_slider_activity_idx(req)
 
-    results: list[RoutineItemResult] = []
-    substitutions: list[str] = []
-    totals = [0.0, 0.0]
-    walk_override_applied = False
-
-    for act in req.activities:
-        allow_slider = (
-            req.walk_override_hour is not None
-            and not walk_override_applied
-            and (act.activity_level in PRIMARY_FLEX_LEVELS or act == req.activities[-1])
-        )
-        run = _schedule_single_activity(
+    for idx in _scheduling_order(req, slider_idx):
+        act = req.activities[idx]
+        member_key = act.member_name.strip().lower()
+        res = _schedule_single_activity(
             act,
             req,
             snapshot,
-            _ScheduleContext(base_micro, target_micro, allow_slider, next_day_pm25, next_day_naqi),
+            _ScheduleContext(
+                base_micro,
+                target_micro,
+                idx == slider_idx,
+                next_day_pm25,
+                next_day_naqi,
+                tuple(occupied_by_member.get(member_key, ())),
+            ),
         )
-        walk_override_applied = walk_override_applied or run[4]
-        totals[0] += run[1]
-        totals[1] += run[2]
-        substitutions.append(run[3])
-        results.append(run[0])
+        runs[idx] = res
+        start_min = res[0].recommended_hour * 60
+        occupied_by_member.setdefault(member_key, []).append(
+            (start_min, start_min + max(1, act.duration_min))
+        )
 
-    return results, round(totals[0], 2), round(totals[1], 2), substitutions
+    return _summarize_schedule_runs(runs)

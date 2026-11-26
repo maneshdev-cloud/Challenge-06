@@ -104,5 +104,18 @@ describe("HouseholdCustomizer", () => {
 
     await user.click(screen.getByRole("button", { name: /Reset Saved Household/i }));
     expect(onResetSaved).toHaveBeenCalledTimes(1);
+
+    [
+      "Filter & Mask Budget",
+      "New member name",
+      "New member age",
+      "Member health sensitivity condition",
+      "New daily commitment or task name",
+      "Assigned household member",
+      "Task schedule flexibility",
+      "Planned hour from 0 to 23"
+    ].forEach((label) => {
+      expect(screen.getByLabelText(label)).toHaveClass("focus-visible:ring-2");
+    });
   });
 });

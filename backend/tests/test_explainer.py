@@ -350,10 +350,59 @@ def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatc
     partial_chat = explainer.build_deterministic_chat_reply("Can dad walk?", partial_bundle, "en")
     assert "partial" in partial_chat.lower() or "fallback" in partial_chat.lower()
 
-    # LLM payload pseudonymizes household member names while preserving activity guidance
+    # LLM payload pseudonymizes member names, task titles, room names, and strips lat/lon coords
     serialized = explainer.serialize_evidence_for_llm(stale_bundle)
     assert "Aarav (Child)" not in serialized
+    assert "School Bus Stop & Drop-Off" not in serialized
+    assert "Front Living Room" not in serialized
+    assert "28.6" not in serialized
+    assert "77.2" not in serialized
+    assert '"lat"' not in serialized and '"lon"' not in serialized
     assert "Household Member 1" in serialized
+    assert "Task 1 (fixed)" in serialized
+    assert "Sanctuary Room" in serialized
+    assert "3 of 8 CPCB criteria pollutants" in serialized
+
+    # Concurrency semaphore caps parallel blocking Gemini invocations without cross-loop failure
+    import json
+    import threading
+
+    import gemini_client
+
+    assert json.loads(serialized)["provenance"]["spatial_note"]
+    active = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-sem-key")
+
+    def concurrent_gemini(*_args) -> str:
+        import time
+
+        with lock:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        try:
+            time.sleep(0.03)
+            return f"Today PM2.5 is {stale_bundle.air_snapshot.current_pm25} ug/m3."
+        finally:
+            with lock:
+                active["now"] -= 1
+
+    monkeypatch.setattr(gemini_client, "MAX_CONCURRENT_GEMINI_CALLS", 2)
+
+    async def _run_burst() -> list:
+        gemini_client._LOOP_SEMAPHORES.clear()
+        return await asyncio.gather(
+            *[
+                gemini_client.run_gemini_with_failover(
+                    lambda _m, _k: concurrent_gemini(), lambda txt, _m: txt
+                )
+                for _ in range(5)
+            ]
+        )
+
+    burst_results = asyncio.run(_run_burst())
+    assert len(burst_results) == 5
+    assert active["peak"] <= 2
 
     # Clean-day trip guidance stays proportional without alarmist outdoor restriction
     base_bundle = _sample_bundle(simulate_stale=False)
