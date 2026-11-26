@@ -4,6 +4,6 @@ pytest-cov==7.1.0
 hypothesis==6.170.17
 ruff==0.17.6
 mypy==2.4.1
-pylint==3.3.7
+pylint==4.1.4
 bandit==1.9.4
 pip-audit==2.10.1
