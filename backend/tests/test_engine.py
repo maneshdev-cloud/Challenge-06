@@ -756,3 +756,45 @@ def test_non_override_schedule_never_increases_dose_or_worsens_rs0_commute() -> 
         <= commute_bundle.breathe_less.baseline_dose_ug
     )
     assert commute_bundle.breathe_less.dose_avoided_ug >= 0.0
+    assert commute_bundle.emit_less.target_mode == "electric_metro"
+    assert commute_bundle.emit_less.co2_saved_g == 0.0
+    assert commute_bundle.emit_less.tailpipe_pm25_saved_mg == 0.0
+
+
+def test_occupied_slot_prevents_monotone_rollback_overlap() -> None:
+    """Flexible 09:00 walk must not roll back into occupied 08:00-11:00 shift even when cleaner."""
+    raw = build_replay_payload("delhi", "test")
+    raw["hourly_raw"]["pm2_5"] = [140.0] * 24
+    raw["hourly_raw"]["pm2_5"][9] = 40.0
+    raw["hourly_raw"]["pm10"] = [200.0] * 24
+    raw["hourly_raw"]["pm10"][9] = 60.0
+
+    req = PlanRequest(
+        city="delhi",
+        budget_tier="rs_0",
+        members=[HouseholdMember(name="Rohan", age=28, conditions=["adult"])],
+        activities=[
+            ActivityItem(
+                id="fixed_shift",
+                name="Morning Shift",
+                flexibility="fixed",
+                planned_hour=8,
+                duration_min=180,
+                activity_level="light_walk",
+                member_name="Rohan",
+            ),
+            ActivityItem(
+                id="overlapping_walk",
+                name="Morning Walk",
+                flexibility="flexible",
+                planned_hour=9,
+                duration_min=60,
+                activity_level="light_walk",
+                member_name="Rohan",
+            ),
+        ],
+    )
+    bundle = build_evidence_bundle(req, raw, current_hour=6)
+    by_id = {item.id: item for item in bundle.routine_plan}
+    assert by_id["fixed_shift"].recommended_hour == 8
+    assert by_id["overlapping_walk"].recommended_hour not in {8, 9, 10}

@@ -132,8 +132,13 @@ def _plan_with_activities(draw: st.DrawFn) -> tuple[PlanRequest, list[float], in
     target_commute_mode: CommuteMode = draw(st.sampled_from(target_commutes))
     day_scale = draw(st.floats(min_value=0.4, max_value=2.5, allow_nan=False))
     night_scale = draw(st.floats(min_value=0.2, max_value=2.5, allow_nan=False))
-    members = [HouseholdMember(name="Member 1", age=draw(st.integers(5, 78)), conditions=["adult"])]
     n_acts = draw(st.integers(min_value=1, max_value=4))
+    members = [
+        HouseholdMember(
+            name=f"Member {idx + 1}", age=draw(st.integers(5, 78)), conditions=["adult"]
+        )
+        for idx in range(n_acts)
+    ]
     activities = []
     for idx in range(n_acts):
         flex: Literal["fixed", "flexible"] = draw(st.sampled_from(flex_opts))
@@ -146,9 +151,9 @@ def _plan_with_activities(draw: st.DrawFn) -> tuple[PlanRequest, list[float], in
                 name=f"Task {idx}",
                 flexibility=flex,
                 planned_hour=draw(st.integers(min_value=0, max_value=23)),
-                duration_min=draw(st.integers(min_value=15, max_value=180)),
+                duration_min=draw(st.integers(min_value=15, max_value=240)),
                 activity_level=level,
-                member_name="Member 1",
+                member_name=f"Member {idx + 1}",
                 current_mask=mask,
                 is_commute=is_commute,
                 is_work_shift=flex == "fixed" and not is_commute and draw(st.booleans()),

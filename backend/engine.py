@@ -23,12 +23,14 @@ from exposure import (
     compute_interval_dose_ug,
     extract_next_day_series,
     schedule_activities,
+    schedule_activities_with_commute,
 )
 from geo_india import CONSTANTS
 from indoor import DEFAULT_ROOMS, score_sanctuary
 from schemas import (
     AirSnapshotResponse,
     BreatheLessLedger,
+    CommuteMode,
     EmitLessLedger,
     EvidenceBundle,
     GroundedMetrics,
@@ -57,6 +59,7 @@ __all__ = [
     "compute_interval_dose_ug",
     "compute_pm25_naqi",
     "find_golden_window",
+    "schedule_activities",
     "score_sanctuary",
 ]
 
@@ -343,13 +346,19 @@ def _build_breathe_less_ledger(
 
 def _compute_routine_and_breathe_less(
     req: PlanRequest, snapshot: AirSnapshotResponse, raw_payload: dict[str, Any]
-) -> tuple[list[RoutineItemResult], BreatheLessLedger]:
-    """Schedule household activities and build the USEPA Breathe Less dose ledger."""
+) -> tuple[list[RoutineItemResult], BreatheLessLedger, CommuteMode]:
+    """Schedule household activities and build USEPA Breathe Less dose ledger + effective mode."""
     next_day = extract_next_day_series(raw_payload)
-    routine_plan, base_dose, opt_dose, dose_subs = schedule_activities(
-        req, snapshot, next_day_pm25=next_day[0], next_day_naqi=next_day[1]
+    routine_plan, base_dose, opt_dose, dose_subs, effective_target_mode = (
+        schedule_activities_with_commute(
+            req, snapshot, next_day_pm25=next_day[0], next_day_naqi=next_day[1]
+        )
     )
-    return routine_plan, _build_breathe_less_ledger(base_dose, opt_dose, dose_subs)
+    return (
+        routine_plan,
+        _build_breathe_less_ledger(base_dose, opt_dose, dose_subs),
+        effective_target_mode,
+    )
 
 
 def build_evidence_bundle(
@@ -361,9 +370,11 @@ def build_evidence_bundle(
 ) -> EvidenceBundle:
     """Assemble the complete immutable deterministic EvidenceBundle for PRANA-AI."""
     snapshot = build_air_snapshot(raw_payload, current_hour=current_hour)
-    routine_plan, breathe_less = _compute_routine_and_breathe_less(req, snapshot, raw_payload)
+    routine_plan, breathe_less, effective_target_mode = _compute_routine_and_breathe_less(
+        req, snapshot, raw_payload
+    )
     sanctuary_plan = score_sanctuary(req, snapshot)
-    emit_less = compute_emit_less(req)
+    emit_less = compute_emit_less(req, effective_target_mode=effective_target_mode)
     profile_summary = build_profile_risk_summary(req, snapshot, breathe_less, emit_less)
     metrics, grounded_list = _collect_grounded_metrics(
         snapshot, routine_plan, sanctuary_plan, (breathe_less, emit_less, profile_summary)

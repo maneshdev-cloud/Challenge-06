@@ -11,6 +11,16 @@ const VALID_MODES = new Set(TRANSPORT_MODES.map((m) => m.key));
 const VALID_CATEGORIES = new Set(Object.keys(CATEGORY_TEMPLATES));
 const VALID_BUDGETS = new Set(["rs_0", "under_500", "under_2200"]);
 const VALID_FLEX = new Set(["fixed", "flexible"]);
+const VALID_ACTIVITY_LEVELS = new Set([
+  "sleep",
+  "seated",
+  "light_walk",
+  "brisk_walk",
+  "child_play",
+  "elderly_walk",
+  "running_or_outdoor_work"
+]);
+const VALID_MASKS = new Set(["none", "cloth", "surgical", "n95"]);
 
 function isPlainObject(val) {
   return Boolean(val) && typeof val === "object" && !Array.isArray(val);
@@ -71,12 +81,16 @@ function sanitizeActivities(list) {
     )
     .slice(0, 40)
     .map((a) => ({
-      ...a,
       id: a.id.trim().slice(0, 60),
       name: a.name.trim().slice(0, 100),
+      flexibility: a.flexibility,
       planned_hour: Number(a.planned_hour),
       duration_min: Math.round(Number(a.duration_min)),
-      member_name: a.member_name.trim().slice(0, 60)
+      activity_level: VALID_ACTIVITY_LEVELS.has(a.activity_level) ? a.activity_level : "light_walk",
+      member_name: a.member_name.trim().slice(0, 60),
+      current_mask: VALID_MASKS.has(a.current_mask) ? a.current_mask : "none",
+      is_commute: Boolean(a.is_commute),
+      is_work_shift: Boolean(a.is_work_shift)
     }));
 }
 

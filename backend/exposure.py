@@ -10,6 +10,7 @@ from emissions import compute_emit_less
 from geo_india import CONSTANTS
 from schemas import (
     AirSnapshotResponse,
+    CommuteMode,
     HourlyAirPoint,
     MaskType,
     PlanRequest,
@@ -25,6 +26,7 @@ __all__ = [
     "extract_next_day_pm25",
     "extract_next_day_series",
     "schedule_activities",
+    "schedule_activities_with_commute",
 ]
 
 PRIMARY_FLEX_LEVELS = {"elderly_walk", "child_play", "running_or_outdoor_work", "brisk_walk"}
@@ -350,7 +352,7 @@ def _schedule_commute_activity(
     peak_pm25: float,
     sensitive: bool,
     commute_micros: tuple[str, str],
-) -> tuple[str, MaskType, list[str], str]:
+) -> tuple[str, MaskType, list[str], str, bool | None]:
     """Build harm-reduction plan for a fixed daily commute."""
     base_micro, target_commute_micro = commute_micros
     arai_map = CONSTANTS["arai_transport_emissions"]
@@ -376,11 +378,16 @@ def _schedule_commute_activity(
     elif req.budget_tier == "rs_0":
         steps.append("Keep windows closed in congestion and pick quieter side-streets.")
 
-    rationale = (
-        f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
-        "mitigation reduce on-road PM2.5 uptake."
+    return (
+        chosen_micro,
+        rec_mask,
+        steps,
+        (
+            f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
+            "mitigation reduce on-road PM2.5 uptake."
+        ),
+        allow_swap if req.target_commute_mode != req.commute_mode else None,
     )
-    return chosen_micro, rec_mask, steps, rationale
 
 
 def _schedule_fixed_default(
@@ -408,14 +415,14 @@ def _schedule_fixed_activity(
     peak_pm25: float,
     sensitive: bool,
     commute_micros: tuple[str, str],
-) -> tuple[str, MaskType, list[str], str]:
+) -> tuple[str, MaskType, list[str], str, bool | None]:
     """Dispatch a fixed activity to work-shift, commute, or roadside-wait planning."""
     base_micro, _ = commute_micros
     if act.is_work_shift:
-        return _schedule_work_shift(act, req, peak_pm25, base_micro)
+        return (*_schedule_work_shift(act, req, peak_pm25, base_micro), None)
     if act.is_commute:
         return _schedule_commute_activity(act, req, peak_pm25, sensitive, commute_micros)
-    return _schedule_fixed_default(act, req, peak_pm25, sensitive, base_micro)
+    return (*_schedule_fixed_default(act, req, peak_pm25, sensitive, base_micro), None)
 
 
 def _flexible_badge(req: PlanRequest, rec_h: int, planned_h: int, is_slider: bool) -> str:
@@ -534,7 +541,11 @@ def _choose_flexible_outcome(
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
-    if req.walk_override_hour is None and rec_dose > base_summary[2]:
+    if (
+        req.walk_override_hour is None
+        and rec_dose > base_summary[2]
+        and not _overlaps_occupied(act.planned_hour * 60, act.duration_min, ctx.occupied_intervals)
+    ):
         rec_h = act.planned_hour
         c_rec_prev = base_summary[1]
         c_rec_peak = base_summary[3]
@@ -581,8 +592,8 @@ def _schedule_single_activity(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
     ctx: _ScheduleContext,
-) -> tuple[RoutineItemResult, float, float, str, bool]:
-    """Optimize and evaluate one activity item, returning result and dose totals."""
+) -> tuple[RoutineItemResult, float, float, str, bool | None]:
+    """Optimize and evaluate one activity item, returning result and commute-swap status."""
     sensitive = _has_sensitive_member(req, act.member_name)
     base_micro = ctx.base_commute_micro if act.is_commute else "walk_sidewalk"
     base_eval = _evaluate_interval_exposure(
@@ -593,13 +604,15 @@ def _schedule_single_activity(
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
+    commute_swapped: bool | None = None
     if act.flexibility == "fixed":
         fixed_plan = _schedule_fixed_activity(
             act, req, base_eval[3], sensitive, (base_micro, ctx.target_commute_micro)
         )
         outcome = _ScheduleOutcome(
-            act.planned_hour, "FIXED • MITIGATED", *fixed_plan, used_slider=False
+            act.planned_hour, "FIXED • MITIGATED", *fixed_plan[:4], used_slider=False
         )
+        commute_swapped = fixed_plan[4]
     else:
         outcome = _choose_flexible_outcome(
             act, req, snapshot, ctx, (sensitive, base_eval[1], base_eval[0], base_eval[3])
@@ -617,7 +630,11 @@ def _schedule_single_activity(
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
-    if req.walk_override_hour is None and opt_eval[0] > base_eval[0]:
+    if (
+        req.walk_override_hour is None
+        and opt_eval[0] > base_eval[0]
+        and not _overlaps_occupied(act.planned_hour * 60, act.duration_min, ctx.occupied_intervals)
+    ):
         outcome = _ScheduleOutcome(
             act.planned_hour,
             "FLEXIBLE • KEPT" if act.flexibility != "fixed" else "FIXED • MITIGATED",
@@ -627,6 +644,8 @@ def _schedule_single_activity(
             f"Retained {act.planned_hour:02d}:00 schedule: alternatives increased PM2.5 dose.",
         )
         opt_eval = base_eval
+        if act.is_commute and req.target_commute_mode != req.commute_mode:
+            commute_swapped = False
     sub_text = _format_dose_substitution(
         act,
         (base_micro, base_eval[1], base_eval[0], act.current_mask),
@@ -638,7 +657,7 @@ def _schedule_single_activity(
         (outcome.rec_hour, opt_eval[1], opt_eval[2], opt_eval[0], outcome.rec_mask),
         (outcome.badge, outcome.steps, outcome.rationale),
     )
-    return item, base_eval[0], opt_eval[0], sub_text, outcome.used_slider
+    return item, base_eval[0], opt_eval[0], sub_text, commute_swapped
 
 
 def _select_slider_activity_idx(req: PlanRequest) -> int | None:
@@ -678,26 +697,29 @@ def _resolve_commute_micros(req: PlanRequest) -> tuple[str, str]:
 
 
 def _summarize_schedule_runs(
-    runs: list[tuple[RoutineItemResult, float, float, str, bool] | None],
-) -> tuple[list[RoutineItemResult], float, float, list[str]]:
-    """Aggregate per-activity dosimetry runs into routine totals."""
+    req: PlanRequest,
+    runs: list[tuple[RoutineItemResult, float, float, str, bool | None] | None],
+) -> tuple[list[RoutineItemResult], float, float, list[str], CommuteMode]:
+    """Aggregate per-activity dosimetry runs into routine totals and effective commute target."""
     final_runs = [r for r in runs if r is not None]
     results = [r[0] for r in final_runs]
     substitutions = [r[3] for r in final_runs]
     base_total = sum(r[1] for r in final_runs)
     opt_total = sum(r[2] for r in final_runs)
-    return results, round(base_total, 2), round(opt_total, 2), substitutions
+    kept_base = any(r[4] is False for r in final_runs) and not any(r[4] is True for r in final_runs)
+    effective_target: CommuteMode = req.commute_mode if kept_base else req.target_commute_mode
+    return results, round(base_total, 2), round(opt_total, 2), substitutions, effective_target
 
 
-def schedule_activities(
+def schedule_activities_with_commute(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
     next_day_pm25: list[float] | None = None,
     next_day_naqi: list[int] | None = None,
-) -> tuple[list[RoutineItemResult], float, float, list[str]]:
-    """Run non-overlapping per-member scheduling and hourly-integrated USEPA dosimetry."""
+) -> tuple[list[RoutineItemResult], float, float, list[str], CommuteMode]:
+    """Run non-overlapping per-member scheduling and return effective target commute mode."""
     base_micro, target_micro = _resolve_commute_micros(req)
-    runs: list[tuple[RoutineItemResult, float, float, str, bool] | None] = [None] * len(
+    runs: list[tuple[RoutineItemResult, float, float, str, bool | None] | None] = [None] * len(
         req.activities
     )
     occupied_by_member: dict[str, list[tuple[int, int]]] = {}
@@ -725,4 +747,17 @@ def schedule_activities(
             (start_min, start_min + max(1, act.duration_min))
         )
 
-    return _summarize_schedule_runs(runs)
+    return _summarize_schedule_runs(req, runs)
+
+
+def schedule_activities(
+    req: PlanRequest,
+    snapshot: AirSnapshotResponse,
+    next_day_pm25: list[float] | None = None,
+    next_day_naqi: list[int] | None = None,
+) -> tuple[list[RoutineItemResult], float, float, list[str]]:
+    """Run non-overlapping per-member scheduling and hourly-integrated USEPA dosimetry."""
+    results, base_total, opt_total, substitutions, _ = schedule_activities_with_commute(
+        req, snapshot, next_day_pm25=next_day_pm25, next_day_naqi=next_day_naqi
+    )
+    return results, base_total, opt_total, substitutions

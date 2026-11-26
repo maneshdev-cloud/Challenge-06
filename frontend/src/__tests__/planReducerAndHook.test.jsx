@@ -99,6 +99,44 @@ describe("planReducer and household persistence", () => {
       lon: null,
       language: "en"
     });
+
+    // Activity sanitizer strips unknown keys and defaults invalid activity_level/current_mask enums
+    localStorage.setItem(
+      HOUSEHOLD_STORAGE_KEY,
+      JSON.stringify({
+        city: "mumbai",
+        activities: [
+          {
+            id: "act_1",
+            name: "Walk",
+            flexibility: "flexible",
+            planned_hour: 8,
+            duration_min: 30,
+            activity_level: "skydiving",
+            member_name: "Me",
+            current_mask: "space_helmet",
+            is_commute: 0,
+            is_work_shift: 1,
+            unexpected_extra_key: "drop-me"
+          }
+        ]
+      })
+    );
+    const sanitized = loadSavedHousehold();
+    expect(sanitized?.activities).toEqual([
+      {
+        id: "act_1",
+        name: "Walk",
+        flexibility: "flexible",
+        planned_hour: 8,
+        duration_min: 30,
+        activity_level: "light_walk",
+        member_name: "Me",
+        current_mask: "none",
+        is_commute: false,
+        is_work_shift: true
+      }
+    ]);
   });
 });
 

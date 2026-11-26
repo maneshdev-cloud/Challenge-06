@@ -48,7 +48,7 @@ class SlidingWindowRateLimiter:
         self,
         max_requests: int = RATE_LIMIT_MAX_REQUESTS,
         window_seconds: float = RATE_LIMIT_WINDOW_SECONDS,
-        max_buckets: int = 1000,
+        max_buckets: int = 50_000,
     ) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
