@@ -127,6 +127,15 @@ _EXEMPT_CONTEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.I,
     ),
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
+    re.compile(
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\b",
+        re.I,
+    ),
+    re.compile(r"\bDay\s+[1-7]\b", re.I),
     re.compile(r"\b\d{1,2}:\d{2}\b"),
     re.compile(r"\b\d{1,2}(?:\s*[-–]\s*\d{1,2})?\s*(?:am|pm)\b", re.I),
     re.compile(r"\b(?:108|112)\b"),
@@ -135,7 +144,7 @@ _EXEMPT_CONTEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d+(?:st|nd|rd|th)\b", re.I),
     re.compile(r"(?m)^\s*\d+[.)]\s+"),
     re.compile(
-        r"\b\d+(?:\s*[-–]\s*\d+)?\s*"
+        r"\b\d+(?:\s*[-–]\s*\d+)?\s*[-–]?\s*"
         r"(?:mins?|minutes?|hrs?|hours?|days?|m(?=\s+off\b)|"
         r"मिनट|मिनिटे|ನಿಮಿಷ|মিনিট|நிமிடம்|నిమిషాలు)(?:\b|(?=\s))",
         re.I,

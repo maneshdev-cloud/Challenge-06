@@ -188,7 +188,8 @@ def test_unicode_numerals_superscripts_and_pm25_prefix_rejected() -> None:
 
     valid_sup = (
         "Live data is unavailable (historical replay). "
-        f"Current PM2.5 is {bundle.air_snapshot.current_pm25} µg/m³."
+        "For your 3-day trip (Day 2, Sat Nov 28), PM2.5 is "
+        f"{bundle.air_snapshot.current_pm25} µg/m³."
     )
     assert validate_narrative(valid_sup, bundle)[0] is True
 

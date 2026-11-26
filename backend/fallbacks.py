@@ -257,13 +257,19 @@ def _topic_walk(bundle: EvidenceBundle) -> TopicPayload:
         else f"Lower-exposure window in {air.city_name} is {gw.window_label} ({gw.mean_pm25} "
         f"ug/m3 PM2.5, Estimated NAQI {gw.mean_naqi}), down from {gw.morning_peak_pm25} ug/m3."
     )
+    avoid_line = (
+        f"For sensitive travelers, skip idling roadside runs around 6-9 AM "
+        f"({gw.morning_peak_pm25} ug/m3); otherwise walks are fine."
+        if gw.is_clean_air_day
+        else f"Skip early-morning outdoor runs when smog sits at {gw.morning_peak_pm25} ug/m3."
+    )
     return (
         intro,
         [
             f"Plan walks around {gw.window_label} on tree-lined lanes away from main roads.",
             "Carry a fitted N95 mask if air is Moderate or worse.",
         ],
-        [f"Skip early-morning outdoor runs when smog sits at {gw.morning_peak_pm25} ug/m3."],
+        [avoid_line],
     )
 
 
@@ -335,22 +341,47 @@ def _topic_trip(bundle: EvidenceBundle) -> TopicPayload:
     gw = air.golden_window
     outlook = air.daily_outlook or []
     best_day = min(outlook, key=lambda d: d.peak_naqi) if outlook else None
+    has_elevated_day = any(d.peak_naqi > 100 for d in outlook)
     note = (
         f" Over 5 days, {best_day.day_label} looks cleanest "
         f"(peak NAQI {best_day.peak_naqi}, best slot {best_day.best_window_label})."
         if best_day
         else ""
     )
+    if gw.is_clean_air_day:
+        intro = (
+            f"For a trip around {air.city_name}, today is {air.current_category} (PM2.5 "
+            f"{air.current_pm25} ug/m3, NAQI {air.current_naqi}) — overall clean travel air, "
+            f"with lowest dust around {gw.window_label} ({gw.mean_pm25} ug/m3).{note}"
+        )
+        ac_step = (
+            "Use cab AC Internal Recirculate behind smoky highway trucks; pack N95 masks if "
+            "later trip days turn Moderate/Poor."
+            if has_elevated_day
+            else "Use cab AC Internal Recirculate when stuck behind smoky highway trucks or tolls."
+        )
+        avoid_step = (
+            f"Air stays {air.current_category} today; for sensitive travelers just skip idling "
+            f"6-9 AM roadside queues ({gw.morning_peak_pm25} ug/m3)."
+        )
+    else:
+        intro = (
+            f"For a trip around {air.city_name}, today is {air.current_category} (PM2.5 "
+            f"{air.current_pm25} ug/m3, NAQI {air.current_naqi}) with cleanest departure at "
+            f"{gw.window_label} ({gw.mean_pm25} ug/m3).{note}"
+        )
+        ac_step = "Keep cab/car AC on Internal Recirculate in highway traffic and pack N95 masks."
+        avoid_step = (
+            f"Avoid early-morning (6-9 AM) outdoor stops near {gw.morning_peak_pm25} ug/m3."
+        )
     return (
-        f"For a trip around {air.city_name}, today is {air.current_category} (PM2.5 "
-        f"{air.current_pm25} ug/m3, NAQI {air.current_naqi}) with cleanest departure at "
-        f"{gw.window_label} ({gw.mean_pm25} ug/m3).{note}",
+        intro,
         [
             f"Time outdoor sightseeing for {gw.window_label} and pick {el.target_mode_label} "
             f"where practical to save {el.co2_saved_g} g CO2e.",
-            "Keep cab/car AC on Internal Recirculate in highway traffic and pack N95 masks.",
+            ac_step,
         ],
-        [f"Avoid early-morning (6-9 AM) outdoor stops near {gw.morning_peak_pm25} ug/m3."],
+        [avoid_step],
     )
 
 

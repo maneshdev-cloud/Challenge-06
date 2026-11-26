@@ -354,3 +354,25 @@ def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatc
     serialized = explainer.serialize_evidence_for_llm(stale_bundle)
     assert "Aarav (Child)" not in serialized
     assert "Household Member 1" in serialized
+
+    # Clean-day trip guidance stays proportional without alarmist outdoor restriction
+    base_bundle = _sample_bundle(simulate_stale=False)
+    clean_bundle = base_bundle.model_copy(
+        update={
+            "air_snapshot": base_bundle.air_snapshot.model_copy(
+                update={
+                    "current_naqi": 54,
+                    "current_pm25": 32.8,
+                    "current_category": "Satisfactory",
+                    "golden_window": base_bundle.air_snapshot.golden_window.model_copy(
+                        update={"is_clean_air_day": True, "mean_pm25": 24.3}
+                    ),
+                }
+            )
+        }
+    )
+    clean_trip = explainer.build_deterministic_chat_reply(
+        "i want to plan a 3 days trip", clean_bundle, "en"
+    )
+    assert "clean travel air" in clean_trip.lower()
+    assert "avoid early-morning" not in clean_trip.lower()
