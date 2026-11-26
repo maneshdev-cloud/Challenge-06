@@ -134,6 +134,16 @@ describe("usePranaPlan hook lifecycle", () => {
     await waitFor(() => expect(result.current.planConfig.language).toBe("hi"));
     expect(document.documentElement.lang).toBe("en");
   });
+
+  it("recovers cleanly when fetchPresets rejects during boot", async () => {
+    mockFetchPresets.mockRejectedValueOnce(new Error("Presets endpoint unavailable"));
+    const { result } = renderHook(() => usePranaPlan());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.presets).toEqual([]);
+    expect(result.current.planConfig.city).toBe("mumbai");
+    expect(mockGeneratePlan).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("pwaAndPermissions utilities", () => {

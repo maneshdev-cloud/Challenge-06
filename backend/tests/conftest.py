@@ -15,7 +15,12 @@ if BACKEND_DIR not in sys.path:
 @pytest.fixture(autouse=True)
 def _reset_rate_limiters() -> None:
     """Isolate per-test request buckets cleanly without test-only production bypasses."""
-    from request_guards import DEFAULT_RATE_LIMITER, NON_LLM_RATE_LIMITER
+    from request_guards import (
+        DEFAULT_RATE_LIMITER,
+        JSON_OUTER_RATE_LIMITER,
+        NON_LLM_RATE_LIMITER,
+    )
 
     DEFAULT_RATE_LIMITER.clear()
+    JSON_OUTER_RATE_LIMITER.clear()
     NON_LLM_RATE_LIMITER.clear()

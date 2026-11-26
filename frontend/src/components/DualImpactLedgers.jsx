@@ -30,8 +30,16 @@ export default function DualImpactLedgers({
   const sliderHour = walkOverrideHour ?? goldenStartHour ?? 14;
   const isPositiveDose = breatheLess.dose_avoided_ug >= 0;
   const lowSmogCigs = breatheLess.cigarettes_avoided >= 0 && breatheLess.cigarettes_avoided < 0.2;
+  const co2Saved = emitLess.co2_saved_g;
+  const co2AbsG = Math.abs(co2Saved);
+  const co2AbsKg = Math.abs(emitLess.co2_saved_kg);
+  const co2Magnitude = co2AbsG >= 1000 ? `${co2AbsKg} kg` : `${co2AbsG} g`;
+  const sootSaved = emitLess.tailpipe_pm25_saved_mg;
+  const sootAbsMg = Math.abs(sootSaved);
+  const sootParenStr =
+    sootSaved > 0 ? `-${sootSaved} mg` : sootSaved < 0 ? `+${sootAbsMg} mg` : "0 mg";
   const phoneCharges =
-    emitLess.phone_charges_saved ?? Math.round(Math.max(0, emitLess.co2_saved_g) / 8.2);
+    co2Saved > 0 ? (emitLess.phone_charges_saved ?? Math.round(co2Saved / 8.2)) : 0;
 
   return (
     <section className="rounded-3xl bg-white p-5 shadow-md shadow-slate-200/60 ring-1 ring-slate-200/70 sm:p-6">
@@ -124,29 +132,38 @@ export default function DualImpactLedgers({
 
           <div className="mt-3.5 flex flex-wrap items-baseline gap-2.5">
             <span className="whitespace-nowrap font-mono text-2xl font-extrabold tabular-nums text-emerald-800 sm:text-3xl">
-              {emitLess.co2_saved_g >= 1000
-                ? `${emitLess.co2_saved_kg} kg`
-                : `${emitLess.co2_saved_g} g`}{" "}
-              <span className="text-sm font-bold">CO2 saved</span>
+              {co2Saved === 0 ? "0 g" : co2Saved < 0 ? `+${co2Magnitude}` : co2Magnitude}{" "}
+              <span className="text-sm font-bold">
+                {co2Saved > 0 ? "CO2 saved" : co2Saved < 0 ? "additional CO2e" : "CO2e change"}
+              </span>
             </span>
             <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200">
-              {emitLess.tailpipe_pm25_saved_mg} mg less street soot
+              {sootSaved > 0
+                ? `${sootSaved} mg less street soot`
+                : sootSaved < 0
+                  ? `+${sootAbsMg} mg additional street soot`
+                  : "No change in street soot"}
             </span>
           </div>
 
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            {phoneCharges > 0 ? (
+            {co2Saved > 0 && phoneCharges > 0 ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100/80 px-3 py-1 text-xs font-bold text-emerald-900">
                 <Smartphone className="h-3.5 w-3.5 text-emerald-700" aria-hidden="true" />
                 ~{phoneCharges} smartphone charges
               </span>
             ) : (
               <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                Same travel mode kept
+                {co2Saved < 0
+                  ? "Higher-emission travel mode"
+                  : co2Saved > 0
+                    ? "Lower-emission travel mode"
+                    : "Same travel mode kept"}
               </span>
             )}
             <span className="font-mono text-[11px] text-slate-600">
-              ({emitLess.co2_saved_g} g CO2e • -{emitLess.tailpipe_pm25_saved_mg} mg tailpipe PM2.5)
+              ({co2Saved > 0 ? co2Saved : co2Saved < 0 ? `+${co2AbsG} additional` : 0} g CO2e •{" "}
+              {sootParenStr} tailpipe PM2.5)
             </span>
           </div>
 

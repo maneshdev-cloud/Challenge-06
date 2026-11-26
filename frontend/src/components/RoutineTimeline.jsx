@@ -26,7 +26,19 @@ function buildShareSummary(bundle, narrative) {
   const { air_snapshot: air, sanctuary_plan: sp, breathe_less: bl, emit_less: el } = bundle;
   const loc =
     air.area_name && air.area_name !== air.city_name ? `${air.area_name}, ${air.city_name}` : air.city_name;
-  const co2Str = el.co2_saved_g >= 1000 ? `${el.co2_saved_kg} kg` : `${el.co2_saved_g} g`;
+  const co2AbsG = Math.abs(el.co2_saved_g);
+  const co2AbsKg = Math.abs(el.co2_saved_kg);
+  const co2Mag = co2AbsG >= 1000 ? `${co2AbsKg} kg` : `${co2AbsG} g`;
+  const co2Summary =
+    el.co2_saved_g > 0
+      ? `${co2Mag} CO2 saved`
+      : el.co2_saved_g < 0
+        ? `+${co2Mag} additional CO2e`
+        : "No CO2 change";
+  const doseSummary =
+    bl.dose_avoided_ug >= 0
+      ? `${bl.reduction_pct}% less pollution breathed (-${bl.dose_avoided_ug} ug PM2.5)`
+      : `${Math.abs(bl.reduction_pct)}% more pollution breathed (+${Math.abs(bl.dose_avoided_ug)} ug PM2.5)`;
   const cleanBrief = (narrative || "").replace(/\*\*/g, "").trim();
 
   return [
@@ -37,7 +49,7 @@ function buildShareSummary(bundle, narrative) {
     "",
     cleanBrief,
     "",
-    `Modeled Impact: ${bl.reduction_pct}% less pollution breathed (-${bl.dose_avoided_ug} ug PM2.5) | ${co2Str} CO2 saved`
+    `Modeled Impact: ${doseSummary} | ${co2Summary}`
   ].join("\n");
 }
 
@@ -159,11 +171,10 @@ export default function RoutineTimeline({
             <button
               type="button"
               onClick={onOpenCleanAirNote}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 ${
-                (bundle?.air_snapshot?.current_naqi || 0) > 150
-                  ? "bg-amber-100 text-amber-950 ring-1 ring-amber-300 hover:bg-amber-200"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-              }`}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 ${(bundle?.air_snapshot?.current_naqi || 0) > 150
+                ? "bg-amber-100 text-amber-950 ring-1 ring-amber-300 hover:bg-amber-200"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
             >
               <FileText className="h-3.5 w-3.5 text-amber-700" aria-hidden="true" />
               <span>School / Office Note</span>
@@ -171,9 +182,8 @@ export default function RoutineTimeline({
           )}
 
           <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold ${
-              narrativeSource === "gemini" ? "bg-violet-50 text-violet-900 ring-1 ring-violet-200" : "bg-slate-100 text-slate-700"
-            }`}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold ${narrativeSource === "gemini" ? "bg-violet-50 text-violet-900 ring-1 ring-violet-200" : "bg-slate-100 text-slate-700"
+              }`}
           >
             <Sparkles className="h-3 w-3" aria-hidden="true" />
             <span>{narrativeSource === "gemini" ? "AI Summary" : "Deterministic Fallback Engine"}</span>
@@ -195,9 +205,8 @@ export default function RoutineTimeline({
             type="button"
             aria-pressed={selectedMember === "ALL"}
             onClick={() => onSelectMember("ALL")}
-            className={`rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-              selectedMember === "ALL" ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
-            }`}
+            className={`rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${selectedMember === "ALL" ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
+              }`}
           >
             All Members
           </button>
@@ -207,9 +216,8 @@ export default function RoutineTimeline({
               type="button"
               aria-pressed={selectedMember === name}
               onClick={() => onSelectMember(name)}
-              className={`rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-                selectedMember === name ? "bg-teal-700 text-white shadow-sm" : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-teal-50"
-              }`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${selectedMember === name ? "bg-teal-700 text-white shadow-sm" : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-teal-50"
+                }`}
             >
               {name}
             </button>
@@ -240,9 +248,8 @@ export default function RoutineTimeline({
                   type="button"
                   onClick={handleToggleListen}
                   aria-label={speaking ? "Stop voice brief" : "Listen to daily brief"}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${
-                    speaking ? "bg-rose-700 text-white hover:bg-rose-800" : "bg-teal-700 text-white hover:bg-teal-800"
-                  }`}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${speaking ? "bg-rose-700 text-white hover:bg-rose-800" : "bg-teal-700 text-white hover:bg-teal-800"
+                    }`}
                 >
                   {speaking ? (
                     <Square className="h-3 w-3 fill-current" aria-hidden="true" />

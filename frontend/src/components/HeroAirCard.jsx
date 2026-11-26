@@ -177,7 +177,7 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
                 Peak intake: {prof.peak_ventilation_m3_hr} m3/hr
               </span>
               <span>
-                Daily lung load: {bl.optimized_dose_ug} ug
+                Planned-activity lung load: {bl.optimized_dose_ug} ug
                 {bl.baseline_dose_ug !== bl.optimized_dose_ug && ` (from ${bl.baseline_dose_ug} ug)`}
               </span>
             </div>

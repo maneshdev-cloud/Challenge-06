@@ -63,6 +63,7 @@ describe("HeroAirCard", () => {
     expect(screen.getByText("Est. India AQI")).toBeInTheDocument();
     expect(screen.getByText("142")).toBeInTheDocument();
     expect(screen.getByText(/Senior Precaution Triggered/)).toBeInTheDocument();
+    expect(screen.getByText(/Planned-activity lung load: 46\.2 ug/)).toBeInTheDocument();
     expect(screen.getByText(/~256 phone charges/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /50% less pollution breathed/i }));

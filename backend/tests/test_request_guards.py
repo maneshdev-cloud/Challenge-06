@@ -188,3 +188,29 @@ def test_cross_origin_post_rejected_and_api_headers_present() -> None:
         json={"city": "delhi"},
     )
     assert spoofed_fwd_host.status_code == 403
+
+
+def test_request_id_sanitized_and_json_outer_limiter_enforced() -> None:
+    """Allowlist valid X-Request-Id values and rate-limit /v1/chat before buffering body."""
+    import re
+    import time
+    from collections import deque
+
+    from request_guards import JSON_OUTER_RATE_LIMITER
+
+    clean = client.get("/health", headers={"x-request-id": "req-123_abc:45.6"})
+    assert clean.headers.get("x-request-id") == "req-123_abc:45.6"
+
+    injected = client.get("/health", headers={"x-vercel-id": "bad\x00value spaces " + ("x" * 200)})
+    sanitized_id = injected.headers.get("x-request-id") or ""
+    assert re.fullmatch(r"[0-9a-f]{32}", sanitized_id) is not None
+
+    JSON_OUTER_RATE_LIMITER.buckets["testclient"] = deque(
+        [time.monotonic()] * JSON_OUTER_RATE_LIMITER.max_requests
+    )
+    try:
+        flood_res = client.post("/v1/chat", json={"message": "wheezing badly"})
+        assert flood_res.status_code == 429
+        assert int(flood_res.headers.get("Retry-After", "0")) >= 1
+    finally:
+        JSON_OUTER_RATE_LIMITER.clear()

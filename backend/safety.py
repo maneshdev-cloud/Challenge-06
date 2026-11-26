@@ -104,8 +104,8 @@ METRIC_NUMBER_PATTERN = re.compile(
 PREFIX_AQI_PATTERN = re.compile(
     r"\b(?:india\s+)?(?:cpcb\s+)?(?:naqi|aqi)\s+"
     r"(?:(?:will|may|might|could)\s+)?"
-    r"(?:(?:is|are|of|at|reaches?|hits?|around|near|about|level|levels?|peaks?|"
-    r"drops?\s+to|:|=)\s+)*"
+    r"(?:(?:is|are|of|at|reaches?|hits?|around|near|about|levels?|peaks?|"
+    r"drops?\s+to|:|=)\s+){0,4}"
     r"(?P<num>\d+(?:,\d{3})*(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
@@ -113,8 +113,8 @@ PREFIX_AQI_PATTERN = re.compile(
 PREFIX_PM25_PATTERN = re.compile(
     r"\bpm\s*2\.5\s+"
     r"(?:(?:will|may|might|could)\s+)?"
-    r"(?:(?:is|are|of|at|reaches?|hits?|around|near|about|level|levels?|peaks?|"
-    r"drops?\s+to|:|=)\s+)+"
+    r"(?:(?:is|are|of|at|reaches?|hits?|around|near|about|levels?|peaks?|"
+    r"drops?\s+to|:|=)\s+){1,4}"
     r"(?P<num>-?\d+(?:,\d{3})*(?:\.\d+)?)\b",
     re.IGNORECASE,
 )
@@ -574,3 +574,24 @@ def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[st
         *_check_provenance_disclosure(text, bundle),
     ]
     return len(reasons) == 0, reasons
+
+
+def is_room_audit_text_grounded(text: str, current_naqi: int | None = None) -> bool:
+    """Reject room audit prose asserting banned claims or ungrounded sensor metrics."""
+    if not text or contains_banned_houseplant(text) or check_safety_claims(text):
+        return False
+    scan = _normalize_for_metric_scan(text)
+    if PCT_RANGE_PATTERN.search(scan) or PREFIX_PM25_PATTERN.search(scan):
+        return False
+    naqi_pool = [float(current_naqi)] if current_naqi is not None else []
+    for match in PREFIX_AQI_PATTERN.finditer(scan):
+        val = float(match.group("num").replace(",", ""))
+        if not naqi_pool or not _is_number_grounded(val, naqi_pool):
+            return False
+    for match in METRIC_NUMBER_PATTERN.finditer(scan):
+        unit = re.sub(r"\s+", " ", match.group("unit").lower().strip())
+        val = float(match.group("num").replace(",", ""))
+        if unit in {"naqi", "aqi"} and naqi_pool and _is_number_grounded(val, naqi_pool):
+            continue
+        return False
+    return True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -16,6 +17,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 __all__ = [
     "DEFAULT_RATE_LIMITER",
+    "JSON_OUTER_RATE_LIMITER",
+    "JSON_OUTER_RATE_LIMIT_MAX_REQUESTS",
     "MAX_AUDIT_BODY_BYTES",
     "MAX_JSON_BODY_BYTES",
     "NON_LLM_RATE_LIMITER",
@@ -33,6 +36,7 @@ __all__ = [
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 RATE_LIMIT_MAX_REQUESTS = 120
 NON_LLM_RATE_LIMIT_MAX_REQUESTS = 90
+JSON_OUTER_RATE_LIMIT_MAX_REQUESTS = 240
 MAX_AUDIT_BODY_BYTES = 5 * 1024 * 1024 + 512 * 1024  # 5 MB image + multipart headers
 MAX_JSON_BODY_BYTES = 512 * 1024  # 512 KB cap for JSON POST routes (/v1/plan, /v1/chat)
 
@@ -96,6 +100,10 @@ class SlidingWindowRateLimiter:
 
 
 DEFAULT_RATE_LIMITER = SlidingWindowRateLimiter()
+JSON_OUTER_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=JSON_OUTER_RATE_LIMIT_MAX_REQUESTS,
+    window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+)
 NON_LLM_RATE_LIMITER = SlidingWindowRateLimiter(
     max_requests=NON_LLM_RATE_LIMIT_MAX_REQUESTS,
     window_seconds=RATE_LIMIT_WINDOW_SECONDS,
@@ -189,11 +197,26 @@ _JSON_TOO_LARGE_DETAIL = "Request payload exceeds the 512 KB size limit."
 class _BodyGuardPolicy:
     max_bytes: int
     too_large_detail: str
-    apply_rate_limit: bool
+    limiter: SlidingWindowRateLimiter | None
 
 
-_AUDIT_BODY_POLICY = _BodyGuardPolicy(MAX_AUDIT_BODY_BYTES, _AUDIT_TOO_LARGE_DETAIL, True)
-_JSON_BODY_POLICY = _BodyGuardPolicy(MAX_JSON_BODY_BYTES, _JSON_TOO_LARGE_DETAIL, False)
+_AUDIT_BODY_POLICY = _BodyGuardPolicy(
+    MAX_AUDIT_BODY_BYTES, _AUDIT_TOO_LARGE_DETAIL, DEFAULT_RATE_LIMITER
+)
+_JSON_BODY_POLICY = _BodyGuardPolicy(
+    MAX_JSON_BODY_BYTES, _JSON_TOO_LARGE_DETAIL, JSON_OUTER_RATE_LIMITER
+)
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _sanitize_request_id(req_headers: dict[bytes, bytes]) -> str:
+    """Allowlist incoming request IDs or generate a hex UUID to block header injection."""
+    for header_key in (b"x-vercel-id", b"x-request-id"):
+        candidate = req_headers.get(header_key, b"").decode("latin-1").strip()
+        if candidate and _REQUEST_ID_RE.fullmatch(candidate):
+            return candidate
+    return uuid.uuid4().hex
 
 
 async def _prepare_bounded_receive(receive: Receive, max_bytes: int) -> tuple[Receive | None, bool]:
@@ -285,8 +308,8 @@ class SecurityAndRequestMiddleware:  # pylint: disable=too-few-public-methods
             await resp(scope, receive, send_with_headers)
             return None, False
 
-        if policy.apply_rate_limit:
-            retry_after = _check_rate_limit_key(resolve_client_ip(req), DEFAULT_RATE_LIMITER)
+        if policy.limiter is not None:
+            retry_after = _check_rate_limit_key(resolve_client_ip(req), policy.limiter)
             if retry_after is not None:
                 resp = JSONResponse(
                     status_code=429,
@@ -319,11 +342,7 @@ class SecurityAndRequestMiddleware:  # pylint: disable=too-few-public-methods
         req_headers = dict(scope.get("headers", []))
         path = str(scope.get("path", ""))
         method = str(scope.get("method", "GET")).upper()
-        request_id = (
-            req_headers.get(b"x-vercel-id", b"").decode("latin-1").strip()
-            or req_headers.get(b"x-request-id", b"").decode("latin-1").strip()
-            or uuid.uuid4().hex[:16]
-        )
+        request_id = _sanitize_request_id(req_headers)
         send_with_headers = _build_security_send(path, request_id, send)
         active_receive = receive
 

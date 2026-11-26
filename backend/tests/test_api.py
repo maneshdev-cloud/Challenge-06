@@ -794,11 +794,27 @@ def test_non_india_coords_naqi_bounds_rate_limits_and_prebuffer_origin() -> None
     assert messages_out[0]["status"] == 403
     assert chunks_seen == 0
 
+    # Unknown preset_id rejected cleanly, while known preset_id resolves defaults when omitted
+    bad_preset = client.post(
+        "/v1/plan",
+        json={"preset_id": "nonexistent_preset", "simulate_stale": True, "skip_llm": True},
+    )
+    assert bad_preset.status_code == 422
+
+    by_preset_id = client.post(
+        "/v1/plan",
+        json={"preset_id": "delhi_family", "simulate_stale": True, "skip_llm": True},
+    )
+    assert by_preset_id.status_code == 200
+    assert len(by_preset_id.json()["evidence_bundle"]["routine_plan"]) == 5
+
     # Non-LLM endpoints (/v1/plan skip_llm=True, /v1/air, /v1/geocode) enforce NON_LLM_RATE_LIMITER
     NON_LLM_RATE_LIMITER.buckets["testclient"] = deque(
         [time.monotonic()] * NON_LLM_RATE_LIMITER.max_requests
     )
     try:
+        throttled_presets = client.get("/v1/presets")
+        assert throttled_presets.status_code == 429
         throttled_plan = client.post(
             "/v1/plan", json={"city": "delhi", "simulate_stale": True, "skip_llm": True}
         )

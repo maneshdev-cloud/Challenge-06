@@ -111,15 +111,18 @@ _ROUTINE_LLM_FIELDS = {
 }
 
 
-def _parse_room_audit_json(
+def _parse_room_audit_json(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     raw_text: str,
     model_used: str,
     city: str,
     language: LanguageCode,
     area_name: str | None,
+    current_naqi: int | None = None,
 ) -> RoomAuditResponse | None:
     """Parse and sanitize Vision JSON tips via fallbacks.parse_room_audit_json."""
-    return parse_room_audit_json(raw_text, model_used, city, language, area_name)
+    return parse_room_audit_json(
+        raw_text, model_used, city, language, area_name, current_naqi=current_naqi
+    )
 
 
 def build_deterministic_plan_narrative(bundle: EvidenceBundle) -> str:
@@ -278,7 +281,12 @@ async def audit_room_photo(  # pylint: disable=too-many-arguments,too-many-posit
             prompt, image_bytes, mime_type, model_name, api_key
         ),
         lambda raw_text, model_name: _parse_room_audit_json(
-            raw_text, model_name, safe_city, language, safe_area
+            raw_text,
+            model_name,
+            safe_city,
+            language,
+            safe_area,
+            current_naqi=bounded_naqi,
         ),
     )
     return parsed or build_deterministic_room_audit(

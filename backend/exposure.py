@@ -328,23 +328,48 @@ def _schedule_work_shift(
     return base_micro, rec_mask, steps, rationale
 
 
+def _select_monotone_commute_micro(
+    base_micro: str,
+    target_micro: str,
+    orig_mask: MaskType,
+    rec_mask: MaskType,
+) -> tuple[str, bool]:
+    """Return target microenvironment unless swapping worsens net inhaled PM2.5 uptake."""
+    micro_map = CONSTANTS["microenv_multipliers"]
+    mask_map = CONSTANTS["mask_filtration_efficiency"]
+    base_eff = float(micro_map[base_micro]) * (1.0 - float(mask_map[orig_mask]))
+    target_eff = float(micro_map[target_micro]) * (1.0 - float(mask_map[rec_mask]))
+    if target_eff > base_eff:
+        return base_micro, False
+    return target_micro, True
+
+
 def _schedule_commute_activity(
     act: Any,
     req: PlanRequest,
     peak_pm25: float,
     sensitive: bool,
-    target_commute_micro: str,
+    commute_micros: tuple[str, str],
 ) -> tuple[str, MaskType, list[str], str]:
     """Build harm-reduction plan for a fixed daily commute."""
+    base_micro, target_commute_micro = commute_micros
     arai_map = CONSTANTS["arai_transport_emissions"]
     rec_mask = _choose_mask(peak_pm25, req.budget_tier, act.current_mask, sensitive)
     base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
     target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
+    chosen_micro, allow_swap = _select_monotone_commute_micro(
+        base_micro, target_commute_micro, act.current_mask, rec_mask
+    )
 
     steps: list[str] = []
-    if req.target_commute_mode != req.commute_mode:
+    if not allow_swap:
+        steps.append(
+            f"Keep {base_spec['label']} enclosure rather than switching to {target_spec['label']} "
+            "to avoid increasing PM2.5 inhalation."
+        )
+    elif req.target_commute_mode != req.commute_mode:
         steps.append(f"Switch mode from {base_spec['label']} to {target_spec['label']}.")
-    elif req.commute_mode in {"car_petrol_solo", "car_diesel_solo", "carpool_3p"}:
+    if chosen_micro == "car_ac_recirc":
         steps.append("Keep car AC on Internal Recirculate mode in congested stretches.")
     if rec_mask == "n95":
         steps.append("Wear a fitted N95 mask on platforms, walkways, and exposed roads.")
@@ -355,7 +380,7 @@ def _schedule_commute_activity(
         f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
         "mitigation reduce on-road PM2.5 uptake."
     )
-    return target_commute_micro, rec_mask, steps, rationale
+    return chosen_micro, rec_mask, steps, rationale
 
 
 def _schedule_fixed_default(
@@ -385,11 +410,11 @@ def _schedule_fixed_activity(
     commute_micros: tuple[str, str],
 ) -> tuple[str, MaskType, list[str], str]:
     """Dispatch a fixed activity to work-shift, commute, or roadside-wait planning."""
-    base_micro, target_commute_micro = commute_micros
+    base_micro, _ = commute_micros
     if act.is_work_shift:
         return _schedule_work_shift(act, req, peak_pm25, base_micro)
     if act.is_commute:
-        return _schedule_commute_activity(act, req, peak_pm25, sensitive, target_commute_micro)
+        return _schedule_commute_activity(act, req, peak_pm25, sensitive, commute_micros)
     return _schedule_fixed_default(act, req, peak_pm25, sensitive, base_micro)
 
 
@@ -485,7 +510,7 @@ def _choose_flexible_outcome(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
     ctx: _ScheduleContext,
-    base_summary: tuple[bool, float],
+    base_summary: tuple[bool, float, float, float],
 ) -> _ScheduleOutcome:
     """Select start hour (or what-if slider hour) and build flexible mitigation details."""
     is_slider = ctx.allow_slider and req.walk_override_hour is not None
@@ -501,7 +526,7 @@ def _choose_flexible_outcome(
             occupied=ctx.occupied_intervals,
         )
     )
-    _, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
+    rec_dose, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
         snapshot.hourly,
         _IntervalQuery(
             rec_h, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
@@ -509,6 +534,10 @@ def _choose_flexible_outcome(
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
+    if req.walk_override_hour is None and rec_dose > base_summary[2]:
+        rec_h = act.planned_hour
+        c_rec_prev = base_summary[1]
+        c_rec_peak = base_summary[3]
     return _schedule_flexible_activity(
         act,
         req,
@@ -572,7 +601,9 @@ def _schedule_single_activity(
             act.planned_hour, "FIXED • MITIGATED", *fixed_plan, used_slider=False
         )
     else:
-        outcome = _choose_flexible_outcome(act, req, snapshot, ctx, (sensitive, base_eval[1]))
+        outcome = _choose_flexible_outcome(
+            act, req, snapshot, ctx, (sensitive, base_eval[1], base_eval[0], base_eval[3])
+        )
 
     opt_eval = _evaluate_interval_exposure(
         snapshot.hourly,
@@ -586,6 +617,16 @@ def _schedule_single_activity(
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
+    if req.walk_override_hour is None and opt_eval[0] > base_eval[0]:
+        outcome = _ScheduleOutcome(
+            act.planned_hour,
+            "FLEXIBLE • KEPT" if act.flexibility != "fixed" else "FIXED • MITIGATED",
+            base_micro,
+            act.current_mask,
+            [f"Keep {act.planned_hour:02d}:00 timing to avoid raising inhaled PM2.5 uptake."],
+            f"Retained {act.planned_hour:02d}:00 schedule: alternatives increased PM2.5 dose.",
+        )
+        opt_eval = base_eval
     sub_text = _format_dose_substitution(
         act,
         (base_micro, base_eval[1], base_eval[0], act.current_mask),

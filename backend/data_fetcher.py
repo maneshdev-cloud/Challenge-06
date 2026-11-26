@@ -340,16 +340,17 @@ async def reverse_geocode_india(
     lon: float,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Resolve Indian GPS coordinates to a cached readable Area, City via BigDataCloud."""
+    """Resolve quantized Indian GPS coords to Area, City via BigDataCloud (never send raw GPS)."""
     lat_f, lon_f = validate_india_coordinates(lat, lon)
-    cache_key = f"{round(lat_f * 50.0) / 50.0:.2f}:{round(lon_f * 50.0) / 50.0:.2f}"
+    lat_q, lon_q = round(lat_f, 2), round(lon_f, 2)
+    cache_key = f"{lat_q:.2f}:{lon_q:.2f}"
     if (cached := _get_aux_cached(_REVERSE_GEO_CACHE, cache_key)) is not None:
         return {**cached, "lat": round(lat_f, 4), "lon": round(lon_f, 4)}
 
     nearest_key = nearest_featured_city(lat_f, lon_f)
     nearest_meta = CONSTANTS["cities"][nearest_key]
     try:
-        params = {"latitude": lat_f, "longitude": lon_f, "localityLanguage": "en"}
+        params = {"latitude": lat_q, "longitude": lon_q, "localityLanguage": "en"}
         data = await _fetch_json(BIGDATACLOUD_REVERSE_URL, params, http_client=http_client)
         parsed = _parse_reverse_geocode_payload(data, lat_f, lon_f, str(nearest_meta["name"]))
         _store_aux_cached(_REVERSE_GEO_CACHE, cache_key, parsed)

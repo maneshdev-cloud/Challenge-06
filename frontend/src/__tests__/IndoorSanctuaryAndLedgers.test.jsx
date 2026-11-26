@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DualImpactLedgers from "../components/DualImpactLedgers";
+import { getHourMeta } from "../components/HourlySlotStrip";
 import IndoorSanctuaryCard from "../components/IndoorSanctuaryCard";
 import RoutineTimeline from "../components/RoutineTimeline";
 
@@ -233,5 +234,67 @@ describe("RoutineTimeline", () => {
 
     await user.click(screen.getByRole("button", { name: /Copy \/ Share Today's Plan/i }));
     expect(await screen.findByText("Copied for WhatsApp!")).toBeInTheDocument();
+  });
+
+  it("handles negative/zero emissions without double negatives and uses safe senior cue", () => {
+    const worseEmit = {
+      ...SAMPLE_BUNDLE.emit_less,
+      co2_saved_g: -600,
+      co2_saved_kg: -0.6,
+      tailpipe_pm25_saved_mg: -48,
+      phone_charges_saved: -73
+    };
+    const { rerender } = render(
+      <DualImpactLedgers
+        breatheLess={SAMPLE_BUNDLE.breathe_less}
+        emitLess={worseEmit}
+        goldenStartHour={14}
+        walkOverrideHour={null}
+        onWalkHourChange={vi.fn()}
+        onResetWalkHour={vi.fn()}
+        targetCommuteMode="car_petrol_solo"
+        onTargetCommuteChange={vi.fn()}
+        commuteKm={14}
+        onCommuteKmChange={vi.fn()}
+        onOpenMath={vi.fn()}
+      />
+    );
+    expect(screen.getByText("+600 g")).toBeInTheDocument();
+    expect(screen.getByText("additional CO2e")).toBeInTheDocument();
+    expect(screen.getByText("+48 mg additional street soot")).toBeInTheDocument();
+    expect(screen.getByText("Higher-emission travel mode")).toBeInTheDocument();
+    expect(screen.queryByText(/smartphone charges/i)).not.toBeInTheDocument();
+
+    rerender(
+      <DualImpactLedgers
+        breatheLess={SAMPLE_BUNDLE.breathe_less}
+        emitLess={{
+          ...SAMPLE_BUNDLE.emit_less,
+          co2_saved_g: 0,
+          co2_saved_kg: 0,
+          tailpipe_pm25_saved_mg: 0,
+          phone_charges_saved: 0
+        }}
+        goldenStartHour={14}
+        walkOverrideHour={null}
+        onWalkHourChange={vi.fn()}
+        onResetWalkHour={vi.fn()}
+        targetCommuteMode="electric_metro"
+        onTargetCommuteChange={vi.fn()}
+        commuteKm={14}
+        onCommuteKmChange={vi.fn()}
+        onOpenMath={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Same travel mode kept")).toBeInTheDocument();
+    expect(screen.getByText("No change in street soot")).toBeInTheDocument();
+
+    const seniorMeta = getHourMeta(
+      { hour: 10, pm2_5: 65, cpcb_naqi: 120 },
+      [],
+      "seniors",
+      150
+    );
+    expect(seniorMeta.cue).toBe("Short, slow walk");
   });
 });

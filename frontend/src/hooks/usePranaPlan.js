@@ -114,7 +114,7 @@ export default function usePranaPlan() {
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([fetchPresets(), fetchCities().catch(() => FALLBACK_CITIES)])
+    Promise.all([fetchPresets().catch(() => []), fetchCities().catch(() => FALLBACK_CITIES)])
       .then(([presetsList, citiesData]) => {
         if (!mounted) return;
         const saved = loadSavedHousehold();

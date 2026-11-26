@@ -313,3 +313,22 @@ def test_strict_grounding_unanchored_numbers_indic_claims_and_ttl(
     expired = bundle.model_copy(update={"issued_at": int(time.time()) - (7 * 3600)})
     expired_sig = sign_evidence_bundle(expired)
     assert verify_evidence_bundle(expired, expired_sig) is False
+
+
+def test_prefix_patterns_linear_time_no_redos() -> None:
+    """Verify PREFIX_AQI_PATTERN and PREFIX_PM25_PATTERN reject ReDoS traps in < 50 ms."""
+    from safety import PREFIX_AQI_PATTERN, PREFIX_PM25_PATTERN
+
+    delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
+    req = PlanRequest(**delhi_preset, simulate_stale=True)
+    bundle = build_evidence_bundle(req, build_replay_payload("delhi", "test"), current_hour=8)
+
+    aqi_trap = "AQI " + "level " * 30 + "high"
+    pm25_trap = "PM2.5 " + "level " * 30 + "high"
+    t0 = time.perf_counter()
+    assert PREFIX_AQI_PATTERN.search(aqi_trap) is None
+    assert PREFIX_PM25_PATTERN.search(pm25_trap) is None
+    ok, _ = validate_narrative(f"Live data unavailable (historical replay). {aqi_trap}.", bundle)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    assert ok is True
+    assert elapsed_ms < 50.0, f"Regex evaluation took {elapsed_ms:.2f} ms (expected < 50 ms)"

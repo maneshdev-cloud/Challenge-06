@@ -701,3 +701,58 @@ def test_non_overlapping_per_member_scheduling_preserves_other_members() -> None
     assert len(rohan_hours) == 3
     assert rohan_hours == {13, 14, 15}
     assert by_id["meera_walk"].recommended_hour == 14
+
+
+def test_non_override_schedule_never_increases_dose_or_worsens_rs0_commute() -> None:
+    """Retain clean night planned_hour and never worsen commute uptake under rs_0."""
+    raw = build_replay_payload("pune", "test")
+    raw["hourly_raw"]["pm2_5"] = [35.0 if (h >= 20 or h <= 5) else 150.0 for h in range(24)]
+    raw["hourly_raw"]["pm10"] = [60.0 if (h >= 20 or h <= 5) else 220.0 for h in range(24)]
+    raw["hourly_raw"]["nitrogen_dioxide"] = [20.0] * 24
+    raw["multiday_raw"] = None
+
+    walk_req = PlanRequest(
+        city="pune",
+        budget_tier="rs_0",
+        activities=[
+            ActivityItem(
+                id="night_walk",
+                name="Night Walk",
+                flexibility="flexible",
+                planned_hour=21,
+                duration_min=60,
+                activity_level="light_walk",
+                member_name="Me",
+            )
+        ],
+    )
+    walk_bundle = build_evidence_bundle(walk_req, raw, current_hour=12)
+    assert walk_bundle.routine_plan[0].recommended_hour == 21
+    assert walk_bundle.routine_plan[0].badge == "FLEXIBLE • KEPT"
+    assert walk_bundle.breathe_less.optimized_dose_ug <= walk_bundle.breathe_less.baseline_dose_ug
+    assert walk_bundle.breathe_less.dose_avoided_ug >= 0.0
+
+    commute_req = PlanRequest(
+        city="pune",
+        budget_tier="rs_0",
+        commute_mode="electric_metro",
+        target_commute_mode="walk_or_cycle",
+        activities=[
+            ActivityItem(
+                id="metro_commute",
+                name="Metro Commute",
+                flexibility="fixed",
+                planned_hour=9,
+                duration_min=60,
+                activity_level="seated",
+                member_name="Me",
+                is_commute=True,
+            )
+        ],
+    )
+    commute_bundle = build_evidence_bundle(commute_req, raw, current_hour=9)
+    assert (
+        commute_bundle.breathe_less.optimized_dose_ug
+        <= commute_bundle.breathe_less.baseline_dose_ug
+    )
+    assert commute_bundle.breathe_less.dose_avoided_ug >= 0.0

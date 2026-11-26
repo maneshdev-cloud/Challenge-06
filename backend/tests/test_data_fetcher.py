@@ -91,8 +91,21 @@ def test_reverse_geocode_offline_fallback_honest_label() -> None:
     assert res["area_name"].startswith("Near ")
     assert is_coastal_location(19.0760, 72.8777, city_key="mumbai") is True
     assert is_coastal_location(28.6139, 77.2090, city_key="delhi") is False
+    assert is_coastal_location(18.5204, 73.8567, state="Maharashtra", city_key=None) is False
     assert is_coastal_location(9.9252, 78.1198, state="Tamil Nadu", city_key=None) is False
     assert is_coastal_location(13.0827, 80.2707, state="Tamil Nadu", city_key=None) is True
+    assert is_coastal_location(9.9312, 76.2673, state="Kerala", city_key=None) is True
+    assert is_coastal_location(12.9141, 74.8560, state="Karnataka", city_key=None) is True
+    assert is_coastal_location(12.9716, 77.5946, state="Karnataka", city_key=None) is False
+    assert is_coastal_location(22.3072, 73.1812, state="Gujarat", city_key=None) is False
+
+    from data_fetcher import suggest_language_for_state
+
+    assert suggest_language_for_state("Kerala") == "en"
+    assert suggest_language_for_state("Odisha") == "en"
+    assert suggest_language_for_state("Assam") == "en"
+    assert suggest_language_for_state("Gujarat") == "hi"
+    assert suggest_language_for_state("Punjab") == "hi"
 
 
 def test_multiday_fallback_slots_not_double_counted() -> None:
@@ -426,3 +439,27 @@ def test_coarse_weather_cache_geocode_caches_and_india_bounds() -> None:
         validate_india_coordinates(-33.86, 151.20)
     with pytest.raises(ValueError, match="India bounds"):
         validate_india_coordinates(0.0, 0.0)
+
+
+def test_reverse_geocode_quantizes_outgoing_coords_to_2_decimals() -> None:
+    """Outgoing BigDataCloud requests must round raw GPS coordinates to 2 decimals (~1.1 km)."""
+    clear_cache()
+    captured_params: list[tuple[str | None, str | None]] = []
+
+    def _geo_handler(request: httpx.Request) -> httpx.Response:
+        captured_params.append(
+            (request.url.params.get("latitude"), request.url.params.get("longitude"))
+        )
+        return httpx.Response(
+            200,
+            json={"city": "Pune", "locality": "Kothrud", "principalSubdivision": "Maharashtra"},
+            request=request,
+        )
+
+    async def _run() -> dict:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_geo_handler)) as client:
+            return await reverse_geocode_india(18.5234, 73.8567, http_client=client)
+
+    res = asyncio.run(_run())
+    assert captured_params == [("18.52", "73.86")]
+    assert res["lat"] == 18.5234 and res["lon"] == 73.8567

@@ -15,7 +15,15 @@ from engine import (
     compute_pm25_naqi,
 )
 from request_guards import SlidingWindowRateLimiter
-from schemas import PlanRequest
+from schemas import (
+    ActivityItem,
+    ActivityLevel,
+    BudgetTier,
+    CommuteMode,
+    HouseholdMember,
+    MaskType,
+    PlanRequest,
+)
 
 
 @settings(max_examples=50, deadline=None)
@@ -96,24 +104,86 @@ def test_rate_limiter_never_exceeds_window_quota(
             assert len(in_window) >= max_requests
 
 
-@settings(max_examples=25, deadline=None)
-@given(
-    city=st.sampled_from(("delhi", "mumbai", "pune", "bengaluru", "kolkata")),
-    budget_tier=st.sampled_from(("rs_0", "under_500", "under_2200")),
-    hour=st.integers(min_value=0, max_value=23),
-    pm25_scale=st.floats(min_value=0.4, max_value=2.5, allow_nan=False),
-)
+@st.composite
+def _plan_with_activities(draw: st.DrawFn) -> tuple[PlanRequest, list[float], int]:
+    """Generate randomized non-empty households across 0..23h and realistic pollution curves."""
+    budgets: tuple[BudgetTier, ...] = ("rs_0", "under_500", "under_2200")
+    commutes: tuple[CommuteMode, ...] = (
+        "car_petrol_solo",
+        "car_diesel_solo",
+        "two_wheeler_petrol",
+        "auto_cng",
+        "city_bus",
+        "electric_metro",
+    )
+    target_commutes: tuple[CommuteMode, ...] = (
+        "electric_metro",
+        "city_bus",
+        "walk_or_cycle",
+        "carpool_3p",
+    )
+    levels: tuple[ActivityLevel, ...] = ("seated", "light_walk", "brisk_walk", "elderly_walk")
+    masks: tuple[MaskType, ...] = ("none", "cloth", "surgical", "n95")
+    flex_opts: tuple[Literal["fixed", "flexible"], ...] = ("fixed", "flexible")
+
+    city = draw(st.sampled_from(("delhi", "mumbai", "pune", "bengaluru", "kolkata")))
+    budget_tier: BudgetTier = draw(st.sampled_from(budgets))
+    commute_mode: CommuteMode = draw(st.sampled_from(commutes))
+    target_commute_mode: CommuteMode = draw(st.sampled_from(target_commutes))
+    day_scale = draw(st.floats(min_value=0.4, max_value=2.5, allow_nan=False))
+    night_scale = draw(st.floats(min_value=0.2, max_value=2.5, allow_nan=False))
+    members = [HouseholdMember(name="Member 1", age=draw(st.integers(5, 78)), conditions=["adult"])]
+    n_acts = draw(st.integers(min_value=1, max_value=4))
+    activities = []
+    for idx in range(n_acts):
+        flex: Literal["fixed", "flexible"] = draw(st.sampled_from(flex_opts))
+        level: ActivityLevel = draw(st.sampled_from(levels))
+        mask: MaskType = draw(st.sampled_from(masks))
+        is_commute = flex == "fixed" and draw(st.booleans())
+        activities.append(
+            ActivityItem(
+                id=f"act_{idx}",
+                name=f"Task {idx}",
+                flexibility=flex,
+                planned_hour=draw(st.integers(min_value=0, max_value=23)),
+                duration_min=draw(st.integers(min_value=15, max_value=180)),
+                activity_level=level,
+                member_name="Member 1",
+                current_mask=mask,
+                is_commute=is_commute,
+                is_work_shift=flex == "fixed" and not is_commute and draw(st.booleans()),
+            )
+        )
+    req = PlanRequest(
+        city=city,
+        budget_tier=budget_tier,
+        commute_mode=commute_mode,
+        target_commute_mode=target_commute_mode,
+        members=members,
+        activities=activities,
+        skip_llm=True,
+    )
+    hour = draw(st.integers(min_value=0, max_value=23))
+    return req, [day_scale, night_scale], hour
+
+
+@settings(max_examples=30, deadline=None)
+@given(generated=_plan_with_activities())
 def test_plan_never_increases_household_inhaled_dose(
-    city: str,
-    budget_tier: Literal["rs_0", "under_500", "under_2200"],
-    hour: int,
-    pm25_scale: float,
+    generated: tuple[PlanRequest, list[float], int],
 ) -> None:
     """Optimal schedule and mitigation never result in higher dose than baseline."""
-    raw = build_replay_payload(city, "property-test")
-    raw["hourly_raw"]["pm2_5"] = [round(v * pm25_scale, 1) for v in raw["hourly_raw"]["pm2_5"]]
-    req = PlanRequest(city=city, budget_tier=budget_tier, skip_llm=True)
+    req, scales, hour = generated
+    day_scale, night_scale = scales
+    raw = build_replay_payload(req.city, "property-test")
+    raw["hourly_raw"]["pm2_5"] = [
+        round(v * (night_scale if (h >= 20 or h <= 5) else day_scale), 1)
+        for h, v in enumerate(raw["hourly_raw"]["pm2_5"])
+    ]
     bundle = build_evidence_bundle(req, raw, current_hour=hour)
+    assert bundle.routine_plan
     assert bundle.breathe_less.optimized_dose_ug <= bundle.breathe_less.baseline_dose_ug
     assert bundle.breathe_less.dose_avoided_ug >= 0.0
     assert bundle.breathe_less.reduction_pct >= 0.0
+    for item in bundle.routine_plan:
+        assert item.optimized_dose_ug <= item.baseline_dose_ug

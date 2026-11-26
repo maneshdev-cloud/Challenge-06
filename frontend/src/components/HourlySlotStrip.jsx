@@ -11,7 +11,7 @@ const HOUR_META_DETAILS = {
     }),
     moderate: (pt, naqi) => ({
       status: "Caution",
-      cue: "Slow + inhaler",
+      cue: "Short, slow walk",
       detail: `Senior sensitive band (${pt.pm2_5} ug/m3, Est. AQI ${naqi}): Elevated for 65+/COPD lungs — keep walks brief & avoid traffic.`
     }),
     high: (pt, naqi) => ({

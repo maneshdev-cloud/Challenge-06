@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from geo_india import CONSTANTS
-from safety import check_safety_claims, contains_banned_houseplant
+from safety import is_room_audit_text_grounded
 from schemas import EvidenceBundle, LanguageCode, RoomAuditResponse, RoomAuditTip
 
 TopicPayload = tuple[str, list[str], list[str]]
@@ -107,7 +107,8 @@ def _english_primary_do_bullet(bundle: EvidenceBundle) -> str:
         ),
         "seniors": (
             f"Keep breathing calm (~{prof.peak_ventilation_m3_hr} m3/hr), walk at "
-            f"{gw.window_label}, and keep rescue medication inside '{sp.sanctuary_room}'."
+            f"{gw.window_label}, and keep rescue medication (if prescribed) inside "
+            f"'{sp.sanctuary_room}'."
         )
         if prof
         else "",
@@ -526,17 +527,32 @@ def _parse_json_payload(raw_text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_LARGE_COST_UNIT_RE = re.compile(
+    r"(?:\d\s*k\b|\b(?:thousand|lakh|lac|crore)s?\b|हज़ार|हजार|लाख|करोड़)",
+    re.IGNORECASE,
+)
+_ZERO_COST_RE = re.compile(
+    r"(?:\b(?:free|zero|nil|no\s+cost)\b|(?:rs\.?|inr|₹)\s*0+(?:\.0+)?\b|"
+    r"मुफ़्त|मुफ्त|शून्य|मोफत|ಉಚಿತ|বিনামূল্যে|இலவசம்|ఉచితం)",
+    re.IGNORECASE,
+)
+
+
 def _cost_within_budget(cost: str) -> bool:
     """Return True when every numeric cost in `cost` sits cleanly within 0..500 INR."""
-    normalized = cost.replace(",", "")
-    if re.search(r"(?:^|\s)-\s*\d+", normalized):
+    normalized = cost.replace(",", "").strip()
+    if not normalized or re.search(r"(?:^|\s)-\s*\d+", normalized):
         return False
-    amounts = [int(n) for n in re.findall(r"\d+", normalized)]
-    return bool(amounts) and max(amounts) <= 500
+    if _LARGE_COST_UNIT_RE.search(normalized):
+        return False
+    amounts = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", normalized)]
+    if amounts:
+        return max(amounts) <= 500.0
+    return bool(_ZERO_COST_RE.search(normalized))
 
 
-def _sanitize_audit_tip(item: Any) -> RoomAuditTip | None:
-    """Validate budget bounds (Rs 0-500) and reject prohibited claims/plants via shared rules."""
+def _sanitize_audit_tip(item: Any, current_naqi: int | None = None) -> RoomAuditTip | None:
+    """Validate budget bounds (Rs 0-500) and reject prohibited or ungrounded claims."""
     if not isinstance(item, dict):
         return None
     title = str(item.get("title") or "").strip()
@@ -546,7 +562,7 @@ def _sanitize_audit_tip(item: Any) -> RoomAuditTip | None:
     if not (title and action and why and _cost_within_budget(cost)):
         return None
     combined = f"{title}. {action}. {why}"
-    if contains_banned_houseplant(combined) or check_safety_claims(combined):
+    if not is_room_audit_text_grounded(combined, current_naqi=current_naqi):
         return None
     try:
         return RoomAuditTip(title=title, cost_inr=cost, action=action, why_it_helps=why)
@@ -554,12 +570,13 @@ def _sanitize_audit_tip(item: Any) -> RoomAuditTip | None:
         return None
 
 
-def parse_room_audit_json(
+def parse_room_audit_json(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     raw_text: str,
     model_name: str,
     city: str,
     language: LanguageCode,
     area_name: str | None,
+    current_naqi: int | None = None,
 ) -> RoomAuditResponse | None:
     """Safely parse and sanitize Gemini Vision JSON output into RoomAuditResponse."""
     payload = _parse_json_payload(raw_text)
@@ -569,12 +586,18 @@ def parse_room_audit_json(
     raw_tips = payload.get("tips")
     if not room_summary or not isinstance(raw_tips, list) or not raw_tips:
         return None
-    if contains_banned_houseplant(room_summary) or check_safety_claims(room_summary):
+    if not is_room_audit_text_grounded(room_summary, current_naqi=current_naqi):
         return None
 
-    tips = [tip for item in raw_tips[:3] if (tip := _sanitize_audit_tip(item)) is not None]
+    tips = [
+        tip
+        for item in raw_tips[:3]
+        if (tip := _sanitize_audit_tip(item, current_naqi=current_naqi)) is not None
+    ]
     if len(tips) < 3:
-        fallback = build_deterministic_room_audit(city, language, area_name=area_name)
+        fallback = build_deterministic_room_audit(
+            city, language, area_name=area_name, current_naqi=current_naqi
+        )
         tips.extend(fallback.tips[: 3 - len(tips)])
 
     try:

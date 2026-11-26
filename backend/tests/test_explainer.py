@@ -425,3 +425,50 @@ def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatc
     )
     assert "clean travel air" in clean_trip.lower()
     assert "avoid early-morning" not in clean_trip.lower()
+
+    # Room audit rejects k/thousand budgets & hallucinated metrics; allows zero-cost labels
+    from fallbacks import _cost_within_budget
+
+    assert _cost_within_budget("Rs. 1.5k") is False
+    assert _cost_within_budget("2 thousand") is False
+    assert _cost_within_budget("Free") is True
+    assert _cost_within_budget("Zero cost") is True
+    assert _cost_within_budget("मुफ़्त") is True
+
+    hallucinated_summary = (
+        '{"room_summary": "Removes 99.9% of PM2.5 (500 ug/m3) immediately!", "tips": ['
+        '{"title": "Seal Gap", "cost_inr": "Free", "action": "Use damp cloth.", '
+        '"why_it_helps": "Blocks infiltration."}]}'
+    )
+    assert explainer._parse_room_audit_json(hallucinated_summary, "m", "Delhi", "en", None) is None
+
+    hallucinated_tip = (
+        '{"room_summary": "Window gap allows road dust indoors.", "tips": ['
+        '{"title": "Magic Seal", "cost_inr": "Rs. 1.5k", '
+        '"action": "Cuts 85% of PM2.5.", "why_it_helps": "Drops 400 ug/m3."}, '
+        '{"title": "Zero Cost Seal", "cost_inr": "Free", '
+        '"action": "Fold damp towel at door base.", '
+        '"why_it_helps": "Blocks road-facing drafts cleanly."}]}'
+    )
+    audited = explainer._parse_room_audit_json(
+        hallucinated_tip, "m", "Delhi", "en", None, current_naqi=180
+    )
+    assert audited is not None
+    assert all(t.title != "Magic Seal" for t in audited.tips)
+    assert any(t.title == "Zero Cost Seal" for t in audited.tips)
+
+    # Seniors deterministic English copy qualifies rescue medication with "if prescribed"
+    from schemas import HouseholdMember
+
+    seniors_bundle = build_evidence_bundle(
+        PlanRequest(
+            city="pune",
+            user_category="seniors",
+            members=[HouseholdMember(name="Dadi", age=70, conditions=["elderly"])],
+            simulate_stale=True,
+        ),
+        build_replay_payload("pune", "test"),
+        current_hour=8,
+    )
+    seniors_narrative = explainer.build_deterministic_plan_narrative(seniors_bundle)
+    assert "rescue medication (if prescribed)" in seniors_narrative

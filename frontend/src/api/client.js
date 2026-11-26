@@ -40,9 +40,17 @@ async function requestJson(path, options = {}) {
     }, REQUEST_TIMEOUT_MS);
 
     try {
+      const headers = { ...(customHeaders || {}) };
+      if (
+        restOptions.body !== undefined &&
+        !(typeof FormData !== "undefined" && restOptions.body instanceof FormData) &&
+        !headers["Content-Type"]
+      ) {
+        headers["Content-Type"] = "application/json";
+      }
       const res = await fetch(`${API_BASE}${path}`, {
         ...restOptions,
-        headers: { "Content-Type": "application/json", ...(customHeaders || {}) },
+        headers,
         signal: controller.signal
       });
 

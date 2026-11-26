@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -160,10 +161,41 @@ def health_check() -> dict[str, str]:
     return {"status": "ok", "app": "PRANA-AI", "version": "1.0.0"}
 
 
+_PRESET_DEFAULTS_FIELDS = (
+    "city",
+    "language",
+    "budget_tier",
+    "commute_mode",
+    "commute_km",
+    "target_commute_mode",
+    "uses_agarbatti_or_coils",
+    "dry_sweeps",
+    "members",
+    "rooms",
+    "activities",
+)
+
+
+def _resolve_preset_defaults(req: PlanRequest) -> PlanRequest:
+    """Populate omitted PlanRequest fields from PRESETS when preset_id is provided."""
+    if not req.preset_id:
+        return req
+    preset = next((p for p in PRESETS if p["id"] == req.preset_id), None)
+    if preset is None:
+        raise HTTPException(status_code=422, detail=f"Unknown preset_id '{req.preset_id}'.")
+    payload = req.model_dump()
+    for field in _PRESET_DEFAULTS_FIELDS:
+        if field not in req.model_fields_set and field in preset:
+            payload[field] = copy.deepcopy(preset[field])
+    return PlanRequest(**payload)
+
+
 @app.get("/v1/cities")
-def get_cities() -> dict[str, Any]:
+def get_cities(request: Request) -> dict[str, Any]:
     """Return featured Indian cities, local languages, and neighborhood coordinates."""
-    return dict(CONSTANTS["cities"])
+    _enforce_origin(request)
+    enforce_rate_limit(request, limiter=NON_LLM_RATE_LIMITER)
+    return copy.deepcopy(dict(CONSTANTS["cities"]))
 
 
 @app.get("/v1/geocode", response_model=list[GeocodeResult])
@@ -196,9 +228,11 @@ async def reverse_geocode_endpoint(
 
 
 @app.get("/v1/presets")
-def get_presets() -> list[dict[str, Any]]:
-    """Return the 4 preloaded household demo personas."""
-    return PRESETS
+def get_presets(request: Request) -> list[dict[str, Any]]:
+    """Return a defensive copy of the 4 preloaded household demo personas."""
+    _enforce_origin(request)
+    enforce_rate_limit(request, limiter=NON_LLM_RATE_LIMITER)
+    return copy.deepcopy(PRESETS)
 
 
 @app.get("/v1/air", response_model=AirSnapshotResponse)
@@ -240,6 +274,7 @@ async def create_plan(req: PlanRequest, request: Request) -> PlanResponse:
         request,
         limiter=NON_LLM_RATE_LIMITER if req.skip_llm else DEFAULT_RATE_LIMITER,
     )
+    req = _resolve_preset_defaults(req)
 
     symptom_text = " ".join(filter(None, [req.symptom_notes] + [a.name for a in req.activities]))
     emergency_alert, emergency_msg = check_medical_emergency(symptom_text)

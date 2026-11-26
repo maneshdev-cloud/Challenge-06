@@ -25,8 +25,11 @@ STATE_LANGUAGE_MAP = {
     "maharashtra": "mr",
     "goa": "mr",
     "karnataka": "kn",
+    "kerala": "en",
     "west bengal": "bn",
     "tripura": "bn",
+    "assam": "en",
+    "odisha": "en",
     "tamil nadu": "ta",
     "puducherry": "ta",
     "telangana": "te",
@@ -43,10 +46,13 @@ STATE_LANGUAGE_MAP = {
     "chhattisgarh": "hi",
     "himachal pradesh": "hi",
     "chandigarh": "hi",
+    "gujarat": "hi",
+    "punjab": "hi",
 }
 
 COASTAL_STATES = {
     "goa",
+    "kerala",
     "puducherry",
     "andaman and nicobar islands",
     "lakshadweep",
@@ -110,7 +116,10 @@ def is_coastal_location(
         return True
     if state and state.strip().lower() in COASTAL_STATES:
         return True
-    west_coast = 8.0 <= lat <= 22.8 and 68.5 <= lon <= 73.5
+    gujarat_coast = 20.5 < lat <= 22.8 and 68.5 <= lon <= 72.9
+    konkan_coast = 14.9 <= lat <= 20.5 and 72.6 <= lon <= 73.4
+    karavali_malabar = 8.0 <= lat < 14.9 and 73.8 <= lon <= (74.25 + (14.9 - lat) * 0.48)
+    west_coast = gujarat_coast or konkan_coast or karavali_malabar
     bay_south = 8.0 <= lat <= 13.5 and (79.1 + max(0.0, lat - 9.2) * 0.18) <= lon <= 81.0
     bay_north = 13.5 < lat <= 22.0 and (80.0 + (lat - 13.5) * 0.9) <= lon <= 88.8
     return west_coast or bay_south or bay_north

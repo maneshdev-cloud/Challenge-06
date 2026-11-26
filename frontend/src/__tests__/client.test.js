@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { auditRoomPhoto, generatePlan, sendChatQuestion } from "../api/client";
+import { auditRoomPhoto, fetchCities, generatePlan, sendChatQuestion } from "../api/client";
 
 describe("API client resilience", () => {
   afterEach(() => {
@@ -96,6 +96,20 @@ describe("API client resilience", () => {
     vi.stubGlobal("fetch", postNetErr);
     await expect(generatePlan({ city: "delhi" })).rejects.toThrow("down");
     expect(postNetErr).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits Content-Type header on GET requests without body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ delhi: { name: "Delhi" } })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchCities();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["Content-Type"]).toBeUndefined();
   });
 
   it("keeps request timeout active through response body consumption", async () => {
