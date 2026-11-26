@@ -66,6 +66,9 @@ describe("HeroAirCard", () => {
     expect(screen.getByText(/Planned-activity lung load: 46\.2 ug/)).toBeInTheDocument();
     expect(screen.getByText(/~256 phone charges/)).toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: /Why this lung risk\?/i }));
+    expect(screen.getByText(/Aged airways clear fine dust slower\./)).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: /50% less pollution breathed/i }));
     expect(onJumpToImpact).toHaveBeenCalledTimes(1);
   });

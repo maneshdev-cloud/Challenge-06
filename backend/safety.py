@@ -369,12 +369,27 @@ def verify_evidence_bundle(
     return hmac.compare_digest(expected, signature.strip().lower())
 
 
+_TRIAGE_SYMPTOM_NOUNS = (
+    r"(?:wheezing|severe\s+wheeze|breathless(?:ness)?|shortness\s+of\s+breath|"
+    r"difficulty\s+breathing|trouble\s+breathing|chest\s+pain|chest\s+tight(?:ness)?|"
+    r"tight\s+chest|blue\s+lips?|bluish\s+lips?|asthma\s+attack|choking|gasping)"
+)
+
+_NEGATED_TRIAGE_PATTERN = re.compile(
+    rf"\b(?:no|without|not\s+having|never\s+had|denies)\s+"
+    rf"(?:any\s+|acute\s+|severe\s+)?{_TRIAGE_SYMPTOM_NOUNS}"
+    rf"(?:\s+(?:or|and|nor)\s+{_TRIAGE_SYMPTOM_NOUNS})?\b"
+)
+
+
 def _normalize_triage_text(text: str) -> str:
-    """Normalize Unicode NFC, zero-width characters, smart quotes, and spaces for triage."""
+    """Normalize Unicode NFC, zero-width characters, smart quotes, and strip negated symptoms."""
     cleaned = unicodedata.normalize("NFC", text)
     cleaned = re.sub(r"[\u200b\u2060\ufeff\u00ad]", "", cleaned)
     cleaned = cleaned.replace("\u2019", "'").replace("\u02bc", "'").replace("\u2018", "'")
-    return re.sub(r"\s+", " ", cleaned).strip().lower()
+    lowered = re.sub(r"\s+", " ", cleaned).strip().lower()
+    stripped = _NEGATED_TRIAGE_PATTERN.sub(" ", lowered)
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 def check_medical_emergency(text: str | None) -> tuple[bool, str | None]:

@@ -44,6 +44,29 @@ def test_medical_emergency_triage() -> None:
     assert safe_msg is None
 
 
+def test_medical_emergency_negation_preserves_real_emergencies() -> None:
+    """Explicitly negated symptoms must not lockdown chat, while unnegated distress alerts."""
+    benign = (
+        "I have no chest pain or wheezing, when can I jog?",
+        "Walking comfortably without shortness of breath today",
+        "Denies any chest tightness; checking Golden Window",
+    )
+    for query in benign:
+        ok, directive = check_medical_emergency(query)
+        assert ok is False, f"Unexpected false-positive ER lockdown for: {query}"
+        assert directive is None
+
+    still_critical = (
+        "I have chest pain and no rescue inhaler",
+        "No chest pain, just severe wheezing right now",
+        "My asthma inhaler is not working",
+    )
+    for query in still_critical:
+        ok, directive = check_medical_emergency(query)
+        assert ok is True, f"Must trigger ER alert for: {query}"
+        assert directive is not None and "108" in directive
+
+
 def test_stale_data_fallback() -> None:
     """Verify simulate_stale=True and Open-Meteo errors return historical replay cleanly."""
     clear_cache()

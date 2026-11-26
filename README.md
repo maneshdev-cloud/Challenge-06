@@ -92,7 +92,7 @@ flowchart LR
 │   ├── fallbacks.py           # 8-language deterministic plan/room templates & EN/Hinglish Q&A
 │   ├── image_audit.py         # 5 MB streaming upload guard, Pillow bomb cap & EXIF stripping
 │   ├── data/                  # Externalized constants.json, presets.json, fallback_replay.json
-│   └── tests/                 # 7 unit, Hypothesis property & integration suites (62 pytest tests)
+│   └── tests/                 # 7 unit, Hypothesis property & integration suites (72 pytest tests)
 ├── frontend/
 │   └── src/
 │       ├── App.jsx            # Dashboard shell & error boundary composition
@@ -100,7 +100,7 @@ flowchart LR
 │       ├── hooks/             # usePranaPlan.js & pure planReducer.js state transitions
 │       ├── components/        # Modular UI panels (HeaderBar, HeroAirCard, SmogChartCard, etc.)
 │       ├── utils/ & data/     # Formatters, RWA/.ics helpers, PWA helpers, and UI constants
-│       └── __tests__/         # 14 Vitest + RTL test files (36 frontend tests)
+│       └── __tests__/         # 14 Vitest + RTL test files (40 frontend tests)
 ├── docs/                      # ARCHITECTURE.md, METHODOLOGY.md, DEPLOYMENT.md, BUILD_IN_PUBLIC.md, screenshots/
 ├── scripts/                   # smoke.py (API/security contract checks) & check-bundle.mjs (gzip budget gate)
 ├── SECURITY.md                # Threat model, verified controls & vulnerability disclosure policy
@@ -171,7 +171,7 @@ All quality, safety, and resilience claims below reflect concrete code implement
 | **Code Quality** | 15 single-responsibility backend modules (`engine.py` facade, isolated `gemini_client.py`, `fallbacks.py`, `request_guards.py`); strict Pydantic schemas; Vite + React reducer/hook decomposition (`planReducer.js`). | Enforced via `ruff` (`format`, `E,F,W,I,UP,B,SIM`, `C901`), raw `pylint` (`10.00/10`), `mypy`, `eslint`, and `.github/dependabot.yml` in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
 | **Security** | Server-only secrets; HMAC-SHA256 bundle signing (`403` on tamper); pre-LLM ER triage; Unicode numeral/superscript metric normalization; CSRF `Origin` checks; proxy-trusted IP rate limits (`120 req/60s`); 5 MB EXIF-stripped uploads; CSP/HSTS/COOP/`nosniff` headers. | Verified in `backend/tests/test_safety.py`, `test_request_guards.py`, `test_api.py`, `bandit`, `pip-audit`, `npm audit --omit=dev`, [`scripts/smoke.py`](scripts/smoke.py), and [`SECURITY.md`](SECURITY.md). |
 | **Efficiency** | Bounded `900s` / `256`-entry LRU Open-Meteo cache; concurrent async AQ+weather fetches; `8.0s` LLM `asyncio.wait_for` cap with pooled clients; `429`/`404` cooldown caches; client `AbortController` + lazy Recharts (`86.28 kB` gzip initial JS). | Verified in `backend/tests/test_data_fetcher.py`, `test_explainer.py`, [`frontend/vite.config.js`](frontend/vite.config.js), and [`scripts/check-bundle.mjs`](scripts/check-bundle.mjs). |
-| **Testing** | **62** backend pytest tests across 7 suites (`test_api`, `test_data_fetcher`, `test_engine`, `test_explainer`, `test_properties`, `test_request_guards`, `test_safety` — including Hypothesis invariants & >=90% source-only line+branch coverage gate), **6** smoke checks, and **36** Vitest + RTL tests across 14 suites. | Runnable directly via `pytest --cov`, `python scripts/smoke.py`, and `npm --prefix frontend run test:coverage`. |
+| **Testing** | **72** backend pytest tests across 7 suites (`test_api`, `test_data_fetcher`, `test_engine`, `test_explainer`, `test_properties`, `test_request_guards`, `test_safety` — including Hypothesis invariants & >=90% source-only line+branch coverage gate), **6** smoke checks, and **40** Vitest + RTL tests across 14 suites. | Runnable directly via `pytest --cov`, `python scripts/smoke.py`, and `npm --prefix frontend run test:coverage`. |
 | **Accessibility** | `eslint-plugin-jsx-a11y` flat audit; WAI-ARIA `tablist` arrow/Home/End keyboard switching; focus-preserving accessible modals; `role="alert"` / `aria-live="polite"` triage & hourly announcements; Web Speech TTS/STT & responsive layouts. | Verified in `frontend/src/__tests__/a11yAndModal.test.jsx`, `EmergencyBanner.test.jsx`, and `npm --prefix frontend run lint`. |
 | **Problem Alignment** | Solves **Challenge 06 (Urban Air Quality Assistant)** for Indian households: Pan-India locations, CPCB NAQI + PBLH curves, constraint-aware schedules, Rs 0–500 room photo fixes, RWA/society scaling + `.ics` calendar export, equity mode, and 8-language support. | Cross-referenced across [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) and [`docs/BUILD_IN_PUBLIC.md`](docs/BUILD_IN_PUBLIC.md). |
 
