@@ -52,7 +52,7 @@ export default function PersonaBar({
       <div
         role="group"
         aria-label="Household profile category"
-        className="flex flex-wrap items-center gap-1.5 sm:flex-1 sm:gap-2"
+        className="grid w-full grid-cols-2 gap-1.5 sm:flex sm:w-auto sm:flex-1 sm:flex-wrap sm:items-center sm:gap-2"
       >
         {USER_CATEGORIES.map(({ id, label, Icon }) => {
           const isActive = activeCategoryId === id;
@@ -62,35 +62,35 @@ export default function PersonaBar({
               type="button"
               aria-pressed={isActive}
               onClick={() => onSelectCategory(id)}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:px-3.5 sm:py-2 ${
+              className={`inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 py-2 text-xs font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto sm:justify-start sm:px-3.5 ${
                 isActive
                   ? "bg-gradient-to-r from-slate-900 to-teal-900 text-white shadow-sm"
                   : "bg-white text-slate-700 shadow-sm ring-1 ring-slate-200/80 hover:bg-teal-50/60"
               }`}
             >
               <Icon
-                className={`h-3.5 w-3.5 ${isActive ? "text-teal-300" : "text-teal-700"}`}
+                className={`h-3.5 w-3.5 shrink-0 ${isActive ? "text-teal-300" : "text-teal-700"}`}
                 aria-hidden="true"
               />
-              <span>{label}</span>
+              <span className="truncate">{label}</span>
             </button>
           );
         })}
       </div>
 
-      <div className="flex shrink-0 items-center justify-end gap-2">
-        <div ref={presetRef} className="relative">
+      <div className="grid w-full grid-cols-2 gap-1.5 sm:flex sm:w-auto sm:shrink-0 sm:items-center sm:gap-2">
+        <div ref={presetRef} className="relative w-full sm:w-auto">
           <button
             type="button"
             aria-expanded={presetOpen}
             aria-haspopup="menu"
             onClick={() => setPresetOpen((v) => !v)}
-            className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-900 ring-1 ring-teal-200/80 transition hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-900 ring-1 ring-teal-200/80 transition hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto"
           >
-            <Sparkles className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+            <Sparkles className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
             <span className="hidden sm:inline">Quick Demo Presets</span>
-            <span className="sm:hidden">Demos</span>
-            <ChevronDown className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+            <span className="sm:hidden">Demo Presets</span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
           </button>
 
           {presetOpen && (
@@ -137,11 +137,10 @@ export default function PersonaBar({
         <button
           type="button"
           onClick={onOpenCustomizer}
-          className="inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200/80 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-slate-200/80 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:w-auto"
         >
-          <SlidersHorizontal className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-          <span className="hidden sm:inline">Edit Household</span>
-          <span className="sm:hidden">Edit</span>
+          <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
+          <span>Edit Household</span>
         </button>
       </div>
     </section>
