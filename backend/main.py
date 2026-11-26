@@ -11,7 +11,10 @@ from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from data_fetcher import (
     CONSTANTS,
@@ -86,6 +89,23 @@ app.add_middleware(
 )
 app.add_middleware(SecurityAndRequestMiddleware, allowed_origins=ALLOWED_ORIGINS)
 app.add_middleware(StripApiPrefixMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Rate-limit repeated malformed JSON or schema-invalid floods on POST /chat & /plan."""
+    if request.method == "POST" and request.url.path.endswith(("/chat", "/plan")):
+        try:
+            enforce_rate_limit(request)
+        except HTTPException as rate_exc:
+            return JSONResponse(
+                status_code=rate_exc.status_code,
+                content={"detail": rate_exc.detail},
+                headers=rate_exc.headers,
+            )
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 
 def _enforce_origin(request: Request) -> None:

@@ -39,6 +39,8 @@ if (chartsChunk) {
   if (ck > BUDGET.chartsChunkKb) {
     failures.push(`charts chunk ${ck.toFixed(2)} kB exceeds ${BUDGET.chartsChunkKb} kB budget`);
   }
+} else {
+  failures.push("Expected lazy charts-*.js chunk missing from dist/assets");
 }
 
 if (initialJsKb > BUDGET.initialJsKb) {

@@ -349,3 +349,8 @@ def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatc
     )
     partial_chat = explainer.build_deterministic_chat_reply("Can dad walk?", partial_bundle, "en")
     assert "partial" in partial_chat.lower() or "fallback" in partial_chat.lower()
+
+    # LLM payload pseudonymizes household member names while preserving activity guidance
+    serialized = explainer.serialize_evidence_for_llm(stale_bundle)
+    assert "Aarav (Child)" not in serialized
+    assert "Household Member 1" in serialized

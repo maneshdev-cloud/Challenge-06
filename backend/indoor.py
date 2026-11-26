@@ -198,9 +198,9 @@ def score_sanctuary(req: PlanRequest, snapshot: AirSnapshotResponse) -> Sanctuar
         room_scores=scored,
         window_advice=_build_window_advice(snapshot, req.budget_tier),
         co2_safety_note=(
-            "PRANA-AI has no live indoor CO2 sensor; keep an inner door slightly ajar overnight "
-            "only if adjoining rooms are free of smoke or incense fumes "
-            "(outer windows follow window timing)."
+            "PRANA-AI has no live indoor CO2 sensor; keeping an inner door slightly ajar overnight "
+            "can aid room-to-room air mixing when adjoining rooms are smoke-free, but does not add "
+            "outdoor oxygen or replace controlled outdoor ventilation."
         ),
         no_houseplants_note=(
             "Indoor houseplants do not remove meaningful PM2.5 in real homes; focus on source "

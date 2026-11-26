@@ -133,6 +133,9 @@ export default function HeroAirCard({ bundle, onJumpToImpact }) {
             <p className="font-mono text-4xl font-extrabold tracking-tight tabular-nums sm:text-5xl">
               {air.current_naqi}
             </p>
+            <p className="text-[10px] font-medium text-white/85">
+              PM2.5 • PM10 • NO2 (~40 km model)
+            </p>
           </div>
           <div className="h-11 w-px bg-white/30" />
           <div>

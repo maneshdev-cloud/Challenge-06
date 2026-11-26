@@ -274,6 +274,14 @@ def test_strict_grounding_unanchored_numbers_indic_claims_and_ttl(
         "Live data unavailable (historical replay). कमरे में मनी प्लांट रखें।",
         "Live data unavailable (historical replay). வெளியே செல்ல பாதுகாப்பானது.",
         "Live data unavailable (historical replay). Take 2 puffs of your steroid inhaler.",
+        "Live data unavailable (historical replay). "
+        "Increase the number of puffs you take every day.",
+        "Live data unavailable (historical replay). Use your salbutamol inhaler twice daily.",
+        "Live data unavailable (historical replay). Start taking cetirizine tablets daily.",
+        "Live data unavailable (historical replay). दिन में दो बार इनहेलर की खुराक बढ़ाएँ।",
+        "Live data unavailable (historical replay). आपको अस्थमा है।",
+        "Live data unavailable (historical replay). तुम्हाला दमा आहे.",
+        "Live data unavailable (historical replay). Inhaler dosage double kijiye.",
         "Live data unavailable (historical replay). No rain forecast and air is completely safe.",
         "Live data unavailable (historical replay). "
         "No rain is forecast and air is completely safe.",

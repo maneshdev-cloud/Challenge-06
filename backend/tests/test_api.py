@@ -554,6 +554,13 @@ def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
         )
         assert forged_er.status_code == 429
 
+        malformed_flood = client.post(
+            "/v1/chat",
+            headers={"content-type": "application/json", "x-forwarded-for": test_ip},
+            content=b"{not-valid-json",
+        )
+        assert malformed_flood.status_code == 429
+
         er_ok = client.post(
             "/v1/chat",
             headers={"x-forwarded-for": test_ip},

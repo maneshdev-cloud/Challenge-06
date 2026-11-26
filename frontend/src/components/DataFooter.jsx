@@ -68,8 +68,9 @@ export default function DataFooter({
           directly for acute breathing distress.
         </span>
         <span>
-          <strong>Privacy:</strong> Household profiles stay in browser storage; optional GPS and
-          room photos are sent ephemerally for forecast/audit lookup only.
+          <strong>Privacy:</strong> Household profiles stay in browser storage; pseudonymized plan
+          context, optional GPS, and EXIF-stripped room photos are processed ephemerally via Google
+          Gemini &amp; Open-Meteo (never stored on server).
         </span>
       </div>
 

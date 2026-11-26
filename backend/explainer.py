@@ -163,7 +163,17 @@ def _call_gemini_vision_sync(
 
 
 def serialize_evidence_for_llm(bundle: EvidenceBundle) -> str:
-    """Serialize compact air, schedule, and ledger facts without noisy hourly arrays."""
+    """Serialize compact air, schedule, and ledger facts without PII names or raw hourly arrays."""
+    member_aliases: dict[str, str] = {}
+    routine_items = []
+    for item in bundle.routine_plan:
+        raw_name = item.member_name.strip() or "Member"
+        if raw_name not in member_aliases:
+            member_aliases[raw_name] = f"Household Member {len(member_aliases) + 1}"
+        dumped = item.model_dump(mode="json", include=_ROUTINE_LLM_FIELDS)
+        dumped["member_name"] = member_aliases[raw_name]
+        routine_items.append(dumped)
+
     compact = {
         "app_name": bundle.app_name,
         "city": bundle.city,
@@ -173,10 +183,7 @@ def serialize_evidence_for_llm(bundle: EvidenceBundle) -> str:
         "budget_tier": bundle.budget_tier,
         "provenance": bundle.provenance.model_dump(mode="json"),
         "air_snapshot": bundle.air_snapshot.model_dump(mode="json", exclude={"hourly": True}),
-        "routine_plan": [
-            item.model_dump(mode="json", include=_ROUTINE_LLM_FIELDS)
-            for item in bundle.routine_plan
-        ],
+        "routine_plan": routine_items,
         "sanctuary_plan": bundle.sanctuary_plan.model_dump(
             mode="json", exclude={"applicable_hacks": True}
         ),

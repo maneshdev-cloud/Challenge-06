@@ -133,7 +133,8 @@ export default function RoomAuditCard({
           <div>
             <h3 className="text-base font-extrabold text-slate-900">Audit My Room Photo</h3>
             <p className="mt-0.5 text-xs text-slate-600">
-              Snap a window, balcony door, or kitchen photo for 3 practical ₹0–₹500 sealing fixes.
+              Snap a window, balcony door, or kitchen photo for 3 practical ₹0–₹500 sealing fixes
+              (EXIF stripped; processed ephemerally via Google Gemini Vision).
             </p>
           </div>
         </div>
