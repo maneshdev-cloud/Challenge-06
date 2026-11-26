@@ -154,7 +154,9 @@ def find_golden_window(hourly_points: list[HourlyAirPoint]) -> GoldenWindow:
     )
 
 
-def classify_meteorology_regime(hourly_points: list[HourlyAirPoint]) -> tuple[float, str]:
+def classify_meteorology_regime(
+    hourly_points: list[HourlyAirPoint], *, is_coastal: bool = False
+) -> tuple[float, str]:
     """Compute morning inversion ceiling (m) and classify today's atmospheric dispersion."""
     morning_pblh = min(hourly_points[h].boundary_layer_height for h in range(5, 9))
     morning_wind = min(hourly_points[h].wind_speed_10m for h in range(5, 9))
@@ -165,7 +167,11 @@ def classify_meteorology_regime(hourly_points: list[HourlyAirPoint]) -> tuple[fl
     elif morning_pblh < 250.0:
         regime = "Moderate Nocturnal Inversion"
     elif day_wind >= 10.0:
-        regime = "Active Daytime / Sea-Breeze Dispersion"
+        regime = (
+            "Active Daytime / Sea-Breeze Dispersion"
+            if is_coastal
+            else "Strong Daytime Wind Dispersion"
+        )
     else:
         regime = "Moderate Boundary-Layer Mixing"
     return round(morning_pblh, 1), regime
@@ -294,7 +300,8 @@ def build_air_snapshot(
     resolved_hour = current_hour if current_hour is not None else datetime.now(IST_TZ).hour
     hour_idx = max(0, min(23, resolved_hour))
     current_pt = hourly_points[hour_idx]
-    inversion_m, regime = classify_meteorology_regime(hourly_points)
+    coastal = bool(raw_payload.get("is_coastal", False))
+    inversion_m, regime = classify_meteorology_regime(hourly_points, is_coastal=coastal)
     sugg_lang, city_name, met_note = _resolve_snapshot_meta(raw_payload, city_meta)
 
     return AirSnapshotResponse(
@@ -304,7 +311,7 @@ def build_air_snapshot(
         state=raw_payload.get("state"),
         lat=raw_payload.get("lat"),
         lon=raw_payload.get("lon"),
-        is_coastal=bool(raw_payload.get("is_coastal", False)),
+        is_coastal=coastal,
         suggested_language=sugg_lang,
         meteorology_note=met_note,
         current_hour=hour_idx,

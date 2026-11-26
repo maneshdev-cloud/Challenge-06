@@ -86,6 +86,10 @@ export const LANGUAGES = [
   { key: "te", label: "Telugu (తెలుగు)", htmlLang: "te" }
 ];
 
+export function getHtmlLang(langCode) {
+  return LANGUAGES.find((l) => l.key === langCode)?.htmlLang || "en";
+}
+
 export const TRANSPORT_MODES = [
   { key: "car_petrol_solo", label: "Petrol Car (Solo)" },
   { key: "car_diesel_solo", label: "Diesel Car (Solo)" },

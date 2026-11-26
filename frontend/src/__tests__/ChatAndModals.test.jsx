@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import FiveDayOutlookCard from "../components/FiveDayOutlookCard";
 import GeminiChatDrawer from "../components/GeminiChatDrawer";
+import HeaderBar from "../components/HeaderBar";
 import LocationSearchPopover from "../components/LocationSearchPopover";
 import ShowMathModal from "../components/ShowMathModal";
 
@@ -166,16 +167,17 @@ describe("FiveDayOutlookCard and ShowMathModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores stale search submit responses after typing changes and handles errors", async () => {
+  it("ignores stale search submit responses after clear or typing changes", async () => {
     const user = userEvent.setup();
     const onSelectGeocode = vi.fn();
-    let resolveSearch;
+    let resolveSubmit;
     const searchSpy = vi
       .spyOn(await import("../api/client"), "searchIndianLocations")
-      .mockImplementation(
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            resolveSearch = resolve;
+            resolveSubmit = resolve;
           })
       );
 
@@ -199,10 +201,92 @@ describe("FiveDayOutlookCard and ShowMathModal", () => {
 
     const input = screen.getByLabelText("Search any Indian city or town");
     await user.type(input, "Jaipur");
-    await user.click(screen.getByRole("button", { name: "Go" }));
+    const goBtn = screen.getByRole("button", { name: "Go" });
+    await waitFor(() => expect(searchSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(goBtn).toBeEnabled());
+
+    await user.click(goBtn);
+    await waitFor(() => expect(searchSpy).toHaveBeenCalledTimes(2));
+    expect(typeof resolveSubmit).toBe("function");
+
+    await user.click(screen.getByRole("button", { name: "Clear city search" }));
+    await act(async () => {
+      resolveSubmit([{ name: "Jaipur", state: "Rajasthan", lat: 26.9, lon: 75.8 }]);
+      await Promise.resolve();
+    });
+    expect(onSelectGeocode).not.toHaveBeenCalled();
+
+    let resolveTypedSubmit;
+    searchSpy.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTypedSubmit = resolve;
+        })
+    );
+
+    await user.type(input, "Kochi");
+    await waitFor(() => expect(searchSpy).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(goBtn).toBeEnabled());
+
+    await user.click(goBtn);
+    await waitFor(() => expect(searchSpy).toHaveBeenCalledTimes(4));
+    expect(typeof resolveTypedSubmit).toBe("function");
+
     await user.type(input, "s");
-    resolveSearch?.([{ name: "Jaipur", state: "Rajasthan", lat: 26.9, lon: 75.8 }]);
-    await waitFor(() => expect(onSelectGeocode).not.toHaveBeenCalled());
+    await act(async () => {
+      resolveTypedSubmit([{ name: "Kochi", state: "Kerala", lat: 9.93, lon: 76.26 }]);
+      await Promise.resolve();
+    });
+    expect(onSelectGeocode).not.toHaveBeenCalled();
     searchSpy.mockRestore();
+  });
+
+  it("restores focus to location trigger on Escape or close button, but not on outside click", async () => {
+    const user = userEvent.setup();
+    render(
+      <HeaderBar
+        citiesMap={{}}
+        city="delhi"
+        cityDisplay="Delhi"
+        stateName="Delhi"
+        onCityChange={vi.fn()}
+        areaName={null}
+        onAreaChange={vi.fn()}
+        onSelectGeocode={vi.fn()}
+        onUseMyLocation={vi.fn()}
+        locating={false}
+        gpsError={null}
+        language="en"
+        onLanguageChange={vi.fn()}
+        suggestedLanguage="hi"
+        simulateStale={false}
+        loading={false}
+        canPromptInstall={false}
+        isStandalone={false}
+        onOpenInstallModal={vi.fn()}
+      />
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /Choose location or search Indian city/i
+    });
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Close location menu" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    const getAppBtn = screen.getByRole("button", { name: /Download or install PRANA-AI app/i });
+    getAppBtn.focus();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).not.toHaveFocus();
   });
 });

@@ -9,6 +9,7 @@ import {
   Upload
 } from "lucide-react";
 import { auditRoomPhoto } from "../api/client";
+import { getHtmlLang } from "../data/constants";
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -139,11 +140,10 @@ export default function RoomAuditCard({
 
         {result && (
           <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold ${
-              result.source === "gemini"
-                ? "bg-violet-50 text-violet-900 ring-1 ring-violet-200"
-                : "bg-slate-100 text-slate-700"
-            }`}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold ${result.source === "gemini"
+              ? "bg-violet-50 text-violet-900 ring-1 ring-violet-200"
+              : "bg-slate-100 text-slate-700"
+              }`}
           >
             <Sparkles className="h-3 w-3" aria-hidden="true" />
             <span>
@@ -246,7 +246,7 @@ export default function RoomAuditCard({
             )}
 
             {result && !loading && (
-              <div aria-live="polite" className="space-y-3">
+              <div aria-live="polite" lang={getHtmlLang(language)} className="space-y-3">
                 <p className="rounded-2xl bg-slate-50 px-3.5 py-2.5 text-xs font-medium leading-relaxed text-slate-700 ring-1 ring-slate-200/70">
                   {result.room_summary}
                 </p>

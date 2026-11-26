@@ -177,6 +177,10 @@ vi.mock("../api/client", () => ({
   searchIndianLocations: vi.fn().mockResolvedValue([])
 }));
 
+vi.mock("../components/SmogChartCard", () => ({
+  default: () => <div data-testid="smog-chart-mock" />
+}));
+
 import App from "../App";
 
 function ModalRerenderHarness() {
@@ -225,6 +229,13 @@ describe("Modal stability and dashboard WAI-ARIA navigation", () => {
     await screen.findByRole("tablist", { name: "Dashboard sections" });
     const tabs = screen.getAllByRole("tab");
     expect(tabs).toHaveLength(4);
+    tabs.forEach((tab) => {
+      const panelId = tab.getAttribute("aria-controls");
+      expect(panelId).toBeTruthy();
+      expect(document.getElementById(panelId)).toBeInTheDocument();
+    });
+    expect(document.getElementById("panel-plan")).not.toHaveAttribute("hidden");
+    expect(document.getElementById("panel-indoor")).toHaveAttribute("hidden");
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(tabs[0]).toHaveAttribute("tabindex", "0");
     expect(tabs[1]).toHaveAttribute("tabindex", "-1");

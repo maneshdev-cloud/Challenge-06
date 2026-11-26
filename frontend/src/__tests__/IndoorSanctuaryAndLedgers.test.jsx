@@ -197,9 +197,10 @@ describe("RoutineTimeline", () => {
         }
       }
     );
-    Object.defineProperty(window, "speechSynthesis", {
-      configurable: true,
-      value: { speak: speakMock, cancel: cancelMock, getVoices: () => [] }
+    vi.stubGlobal("speechSynthesis", {
+      speak: speakMock,
+      cancel: cancelMock,
+      getVoices: () => []
     });
 
     render(

@@ -75,7 +75,19 @@ def get_api_keys() -> list[str]:
 
 
 _RETRYABLE_STATUS_CODES = {500, 502, 503, 529}
-_INVALID_KEY_STATUS_CODES = {400, 401, 403}
+_INVALID_KEY_STATUS_CODES = {401, 403}
+
+
+def _check_finish_reason(response: Any, model_name: str) -> bool:
+    """Return False when a Gemini candidate explicitly terminated due to MAX_TOKENS truncation."""
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return True
+    reason = str(getattr(candidates[0], "finish_reason", "") or "").upper()
+    if "MAX_TOKENS" in reason:
+        logger.warning("Gemini output truncated by MAX_TOKENS for model %s.", model_name)
+        return False
+    return True
 
 
 def classify_gemini_error(exc: Exception) -> str:
@@ -102,9 +114,11 @@ def call_gemini_sync(prompt: str, model_name: str, api_key: str, *, system_instr
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.2,
-            max_output_tokens=500,
+            max_output_tokens=900,
         ),
     )
+    if not _check_finish_reason(response, model_name):
+        return ""
     return (response.text or "").strip()
 
 
@@ -131,10 +145,12 @@ def call_gemini_vision_sync(  # pylint: disable=too-many-arguments
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.2,
-            max_output_tokens=700,
+            max_output_tokens=1100,
             response_mime_type="application/json",
         ),
     )
+    if not _check_finish_reason(response, model_name):
+        return ""
     return (response.text or "").strip()
 
 

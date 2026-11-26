@@ -91,7 +91,7 @@ describe("usePranaPlan hook lifecycle", () => {
     vi.clearAllMocks();
   });
 
-  it("loads presets/cities on mount, runs initial plan, and updates document lang on switch", async () => {
+  it("loads presets/cities on mount, runs initial plan, and keeps document html lang en on switch", async () => {
     const { result } = renderHook(() => usePranaPlan());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -102,8 +102,8 @@ describe("usePranaPlan hook lifecycle", () => {
       result.current.handleLanguageChange("hi");
     });
 
-    await waitFor(() => expect(document.documentElement.lang).toBe("hi"));
-    expect(result.current.planConfig.language).toBe("hi");
+    await waitFor(() => expect(result.current.planConfig.language).toBe("hi"));
+    expect(document.documentElement.lang).toBe("en");
   });
 });
 

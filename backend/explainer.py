@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Literal
 
 from fallbacks import (
@@ -68,6 +69,7 @@ STRICT RULES:
    historical replay is shown; if `is_partial_fallback` is true, note fallback slots were used.
 9. Match requested language (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`) in clear,
    warm 8th-grade reading level.
+10. NEVER prescribe medication, adjust inhaler or pill dosages, or diagnose medical conditions.
 """
 
 VISION_SYSTEM_PROMPT = """You are PRANA-AI, an indoor air quality specialist helping families
@@ -214,6 +216,12 @@ async def _try_gemini_with_validation(prompt: str, bundle: EvidenceBundle) -> st
     return result
 
 
+def _sanitize_prompt_field(value: str | None, fallback: str = "") -> str:
+    """Strip control characters and prompt-breaking newlines from user-supplied metadata."""
+    cleaned = re.sub(r"[^\w\s,.'()/-]+", " ", (value or "").strip())
+    return re.sub(r"\s+", " ", cleaned).strip()[:60] or fallback
+
+
 async def audit_room_photo(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     image_bytes: bytes,
     mime_type: str,
@@ -223,8 +231,17 @@ async def audit_room_photo(  # pylint: disable=too-many-arguments,too-many-posit
     current_naqi: int | None = None,
 ) -> RoomAuditResponse:
     """Inspect uploaded room/kitchen image via Gemini Vision with key rotation & fallback."""
-    loc = f"{area_name}, {city}" if area_name and area_name.lower() != city.lower() else city
-    aqi_ctx = f"Current estimated local India NAQI: {current_naqi}." if current_naqi else ""
+    safe_city = _sanitize_prompt_field(city, "delhi")
+    safe_area = _sanitize_prompt_field(area_name) if area_name else None
+    bounded_naqi = current_naqi if current_naqi is not None and 0 <= current_naqi <= 500 else None
+    loc = (
+        f"{safe_area}, {safe_city}"
+        if safe_area and safe_area.lower() != safe_city.lower()
+        else safe_city
+    )
+    aqi_ctx = (
+        f"Current estimated local India NAQI: {bounded_naqi}." if bounded_naqi is not None else ""
+    )
     prompt = (
         f"Requested language: {language}\nLocation: {loc}, India. {aqi_ctx}\n"
         "Examine this household room/kitchen photo for window/door gaps, exhaust placement, "
@@ -235,11 +252,11 @@ async def audit_room_photo(  # pylint: disable=too-many-arguments,too-many-posit
             prompt, image_bytes, mime_type, model_name, api_key
         ),
         lambda raw_text, model_name: _parse_room_audit_json(
-            raw_text, model_name, city, language, area_name
+            raw_text, model_name, safe_city, language, safe_area
         ),
     )
     return parsed or build_deterministic_room_audit(
-        city, language, area_name=area_name, current_naqi=current_naqi
+        safe_city, language, area_name=safe_area, current_naqi=bounded_naqi
     )
 
 

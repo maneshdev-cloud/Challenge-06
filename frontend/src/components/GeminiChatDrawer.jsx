@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Mic, MicOff, Send, ShieldAlert, Sparkles } from "lucide-react";
+import { getHtmlLang } from "../data/constants";
 import {
   getSpeechRecognitionCtor,
   isSecureOriginForDevices,
@@ -150,7 +151,9 @@ export default function GeminiChatDrawer({
         <div>
           <h2 className="text-base font-extrabold text-slate-900">Ask PRANA-AI</h2>
           <p className="text-xs text-slate-600">
-            Answers grounded in Today&apos;s Live Data with automatic medical triage safety check
+            Answers grounded in Today&apos;s Live Data with best-effort keyword triage (call{" "}
+            <strong className="font-bold text-rose-700">108 / 112</strong> directly for acute
+            breathing distress).
           </p>
         </div>
       </div>
@@ -187,6 +190,7 @@ export default function GeminiChatDrawer({
             className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
+              lang={m.role === "assistant" && m.source !== "emergency_triage" ? getHtmlLang(language) : "en"}
               className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs leading-relaxed sm:text-sm ${m.role === "user"
                 ? "bg-slate-900 text-white"
                 : m.emergency

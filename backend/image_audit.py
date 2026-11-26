@@ -6,7 +6,7 @@ import io
 import warnings
 
 from fastapi import HTTPException, UploadFile
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 __all__ = [
     "ALLOWED_IMAGE_FORMATS",
@@ -54,8 +54,9 @@ async def read_room_upload_bytes(file: UploadFile) -> bytes:
 
 def _reencode_clean_image(raw_bytes: bytes, fmt: str, mime_type: str) -> tuple[bytes, str]:
     """Re-encode image without EXIF metadata, shrinking large uploads to max 1280 px."""
-    with Image.open(io.BytesIO(raw_bytes)) as img:
-        img.load()
+    with Image.open(io.BytesIO(raw_bytes)) as raw_img:
+        raw_img.load()
+        img = ImageOps.exif_transpose(raw_img)
         out = io.BytesIO()
         if len(raw_bytes) > 1_200_000 or max(img.size) > 1280:
             rgb = img.convert("RGB")

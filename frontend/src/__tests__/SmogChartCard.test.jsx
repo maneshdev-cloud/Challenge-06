@@ -77,6 +77,9 @@ describe("SmogChartCard", () => {
       status: "Caution",
       cue: "Caution"
     });
+    expect(getHourMeta(ptMod, [], "unknown_profile")).toMatchObject({
+      cue: "Short errands"
+    });
     expect(getHourMeta(ptHigh, [], "unknown_profile")).toMatchObject({
       status: "Severe",
       cue: "Stay indoors"

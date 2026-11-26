@@ -76,8 +76,9 @@ const HOUR_META_DETAILS = {
 export function getHourMeta(pt, goldenHours, profileKey = "adults_commuters", warningThreshold = null) {
   const isGolden = goldenHours.includes(pt.hour);
   const naqi = pt.cpcb_naqi;
-  const threshold = warningThreshold ?? (profileKey === "adults_commuters" ? 150 : 100);
-  const pack = HOUR_META_DETAILS[profileKey] || HOUR_META_DETAILS.adults_commuters;
+  const resolvedProfile = HOUR_META_DETAILS[profileKey] ? profileKey : "adults_commuters";
+  const threshold = warningThreshold ?? (resolvedProfile === "adults_commuters" ? 150 : 100);
+  const pack = HOUR_META_DETAILS[resolvedProfile];
   const bandKey = naqi <= 100 ? "good" : naqi <= 200 ? "moderate" : "high";
   const info = pack[bandKey](pt, naqi);
 
@@ -213,9 +214,8 @@ export default function HourlySlotStrip({ airSnapshot, profileSummary }) {
               aria-pressed={isSelected}
               aria-label={`${formatHourAmPm(pt.hour)}, ${meta.status}, PM2.5 ${pt.pm2_5} ug/m3, Est. AQI ${pt.cpcb_naqi}`}
               onClick={() => setSelectedHour(pt.hour)}
-              className={`flex w-32 shrink-0 snap-start flex-col justify-between rounded-2xl bg-gradient-to-b ${meta.cardTint} p-2.5 text-left ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
-                isSelected ? meta.selectedRing : "hover:brightness-95"
-              }`}
+              className={`flex w-32 shrink-0 snap-start flex-col justify-between rounded-2xl bg-gradient-to-b ${meta.cardTint} p-2.5 text-left ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${isSelected ? meta.selectedRing : "hover:brightness-95"
+                }`}
             >
               <div className="flex items-center justify-between gap-1">
                 <span className="whitespace-nowrap font-mono text-xs font-extrabold text-slate-900">

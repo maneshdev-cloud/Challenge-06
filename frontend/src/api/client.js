@@ -1,9 +1,26 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
 const REQUEST_TIMEOUT_MS = 25000;
 
+function extractErrorMessage(rawText, status, statusText) {
+  if (rawText) {
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed?.detail) {
+        return typeof parsed.detail === "string" ? parsed.detail : `Request failed (${status}).`;
+      }
+    } catch {
+      const clean = rawText.trim();
+      if (clean) return clean;
+    }
+  }
+  return statusText ? `Request failed (${status}: ${statusText}).` : `Request failed (${status}).`;
+}
+
 async function requestJson(path, options = {}) {
   const { signal: externalSignal, headers: customHeaders, ...restOptions } = options;
-  const maxAttempts = 2;
+  const method = (restOptions.method || "GET").toUpperCase();
+  const isSafeRetry = method === "GET" || method === "HEAD";
+  const maxAttempts = isSafeRetry ? 2 : 1;
   let lastErr;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -28,23 +45,19 @@ async function requestJson(path, options = {}) {
         headers: { "Content-Type": "application/json", ...(customHeaders || {}) },
         signal: controller.signal
       });
-      clearTimeout(timer);
-      externalSignal?.removeEventListener("abort", onExternalAbort);
 
       if (res.ok) {
-        return res.json();
+        return await res.json();
       }
       const detail = (await res.text()).trim();
-      // Retry once briefly if Vite proxy returns an empty 500/502/503 during hot reload
+      // Retry once only for idempotent GET/HEAD requests on empty 5xx proxy glitches
       if (attempt < maxAttempts && !detail && res.status >= 500) {
+        clearTimeout(timer);
         await new Promise((r) => setTimeout(r, 350));
         continue;
       }
-      throw new Error(`API ${res.status}: ${detail || res.statusText || "Server busy"}`);
+      throw new Error(extractErrorMessage(detail, res.status, res.statusText));
     } catch (err) {
-      clearTimeout(timer);
-      externalSignal?.removeEventListener("abort", onExternalAbort);
-
       if (externalSignal?.aborted) {
         const abortErr = new Error("Request cancelled.");
         abortErr.name = "AbortError";
@@ -52,6 +65,7 @@ async function requestJson(path, options = {}) {
       }
       lastErr = err;
       if (attempt < maxAttempts && (err?.name === "TypeError" || timedOut)) {
+        clearTimeout(timer);
         await new Promise((r) => setTimeout(r, 350));
         continue;
       }
@@ -59,6 +73,9 @@ async function requestJson(path, options = {}) {
         throw new Error("Request timed out; please retry.");
       }
       throw err;
+    } finally {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
     }
   }
   throw lastErr;
@@ -131,36 +148,38 @@ export async function auditRoomPhoto(file, { city, language, area_name, current_
   if (current_naqi != null) formData.append("current_naqi", String(current_naqi));
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
 
-  let res;
   try {
-    res = await fetch(`${API_BASE}/v1/audit-room`, {
+    const res = await fetch(`${API_BASE}/v1/audit-room`, {
       method: "POST",
       body: formData,
       signal: controller.signal
     });
+    const rawText = await res.text();
+    if (!res.ok) {
+      let message = `Audit failed (${res.status})`;
+      if (rawText) {
+        try {
+          const parsed = JSON.parse(rawText);
+          if (parsed?.detail) message = parsed.detail;
+        } catch {
+          message = rawText.trim();
+        }
+      }
+      throw new Error(message);
+    }
+    return rawText ? JSON.parse(rawText) : {};
   } catch (err) {
-    clearTimeout(timer);
-    if (err?.name === "AbortError") {
+    if (timedOut || err?.name === "AbortError") {
       throw new Error("Photo audit timed out; please try a smaller photo or retry.");
     }
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  clearTimeout(timer);
-
-  const rawText = await res.text();
-  if (!res.ok) {
-    let message = `Audit failed (${res.status})`;
-    if (rawText) {
-      try {
-        const parsed = JSON.parse(rawText);
-        if (parsed?.detail) message = parsed.detail;
-      } catch {
-        message = rawText.trim();
-      }
-    }
-    throw new Error(message);
-  }
-  return rawText ? JSON.parse(rawText) : {};
 }

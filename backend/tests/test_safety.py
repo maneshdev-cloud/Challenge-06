@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import unicodedata
 
 import httpx
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from data_fetcher import PRESETS, build_replay_payload, clear_cache, fetch_city_atmospheric_data
 from engine import build_evidence_bundle
 from safety import (
+    EMERGENCY_KEYWORDS,
     check_medical_emergency,
     sign_evidence_bundle,
     validate_narrative,
@@ -130,7 +133,7 @@ def test_numeric_category_binding_and_policy_validator() -> None:
 
 def test_hmac_bundle_signing_and_key_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify HMAC signing/tamper detection and zero coupling to GEMINI_API_KEY or deploy IDs."""
-    monkeypatch.setenv("PRANA_BUNDLE_SECRET", "unit-test-hmac-secret-key")
+    monkeypatch.setenv("PRANA_BUNDLE_SECRET", "unit-test-hmac-secret-key-32bytes!")
     preset = PRESETS[0]
     bundle = build_evidence_bundle(
         PlanRequest(**preset), build_replay_payload(preset["city"], "test"), current_hour=9
@@ -165,9 +168,132 @@ def test_hmac_bundle_signing_and_key_isolation(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("VERCEL_PROJECT_ID", "prj_public_123")
     with pytest.raises(RuntimeError, match="PRANA_BUNDLE_SECRET"):
         sign_evidence_bundle(bundle)
+    monkeypatch.setenv("PRANA_BUNDLE_SECRET", "too-short-secret")
+    with pytest.raises(RuntimeError, match="32 bytes"):
+        sign_evidence_bundle(bundle)
+    monkeypatch.delenv("PRANA_BUNDLE_SECRET", raising=False)
     monkeypatch.delenv("VERCEL_ENV", raising=False)
     # Local ephemeral fallback remains stable in-process while GEMINI_API_KEY changes.
     sig_local_1 = sign_evidence_bundle(bundle)
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-three")
     sig_local_2 = sign_evidence_bundle(bundle)
     assert sig_local_1 == sig_local_2
+
+
+def test_unicode_numerals_superscripts_and_pm25_prefix_rejected() -> None:
+    """Reject fabricated Devanagari/Unicode numerals, ug/m³ leaks, and PM2.5-prefix numbers."""
+    delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
+    req = PlanRequest(**delhi_preset, simulate_stale=True)
+    bundle = build_evidence_bundle(req, build_replay_payload("delhi", "test"), current_hour=8)
+
+    valid_sup = (
+        "Live data is unavailable (historical replay). "
+        f"Current PM2.5 is {bundle.air_snapshot.current_pm25} µg/m³."
+    )
+    assert validate_narrative(valid_sup, bundle)[0] is True
+
+    bad_inputs = (
+        "Live data is unavailable (historical replay). आज PM2.5 ३५० µg/m³ है।",
+        "Live data is unavailable (historical replay). Exposure dropped ९९ प्रतिशत.",
+        "Live data is unavailable (historical replay). PM2.5 is 999 today.",
+        "Live data is unavailable (historical replay). एक्यूआई ८८८ है।",
+        "Live data is unavailable (historical replay). एक्यूआई 777 है।",
+    )
+    for bad in bad_inputs:
+        ok, reasons = validate_narrative(bad, bundle)
+        assert ok is False, f"Expected rejection for fabricated text: {bad}"
+        assert reasons
+
+
+def test_multilingual_single_script_triage_and_english_paraphrases() -> None:
+    """Assert single-script Indic keywords and triage triggers across all 8 languages + EN."""
+    for kw in EMERGENCY_KEYWORDS:
+        scripts = {
+            unicodedata.name(ch, "").split()[0] for ch in kw if ord(ch) > 127 and ch.isalpha()
+        }
+        assert len(scripts) <= 1, f"Mixed script detected in emergency keyword {kw!r}: {scripts}"
+
+    eight_lang_and_en_phrases = (
+        "trouble breathing",
+        "hard to breathe",
+        "I can't catch my breath",
+        "short of breath",
+        "feels like a heart attack",
+        "sharp pain in my chest",
+        "lips turning blue",
+        "suffocating indoors",
+        "unable to breathe",
+        "can not breathe",
+        "my chest feels tight",
+        "can\u200b't breathe right now",
+        "saans phool rahi hai",
+        "सीने में दर्द हो रहा है",
+        "मला श्वास घेता येत नाही",
+        "ಉಸಿರಾಡಲು ಆಗುತ್ತಿಲ್ಲ",
+        "શ્વાસ નથી લેવાતો",
+        "শ্বাসকষ্ট হচ্ছে",
+        "மூச்சுத் திணறல்",
+        "శ్వాస అందడం లేదు",
+    )
+    for phrase in eight_lang_and_en_phrases:
+        triggered, directive = check_medical_emergency(phrase)
+        assert triggered is True, f"Expected triage alert for: {phrase!r}"
+        assert directive and "108" in directive
+
+
+def test_strict_grounding_unanchored_numbers_indic_claims_and_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify strict grounding on standalone numbers, Indic claims, dosing, and bundle TTL."""
+    monkeypatch.setenv("PRANA_BUNDLE_SECRET", "strict-ttl-test-secret-32-bytes!")
+    delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
+    req = PlanRequest(**delhi_preset, simulate_stale=True)
+    bundle = build_evidence_bundle(req, build_replay_payload("delhi", "test"), current_hour=8)
+
+    base_ok = (
+        "Live data is unavailable (historical replay). "
+        f"Current PM2.5 is {bundle.air_snapshot.current_pm25} ug/m3."
+    )
+    assert validate_narrative(base_ok, bundle)[0] is True
+
+    # Near-miss ungrounded value (e.g. +2.7) must fail tight rounding check
+    near_miss = (
+        "Live data is unavailable (historical replay). "
+        f"PM2.5 is {round(bundle.air_snapshot.current_pm25 + 2.7, 1)} ug/m3."
+    )
+    assert validate_narrative(near_miss, bundle)[0] is False
+
+    bad_claims = (
+        "Live data unavailable (historical replay). PM2.5 reaches 987.",
+        "Live data unavailable (historical replay). The AQI will hit 999.",
+        "Live data unavailable (historical replay). The PM2.5 level 987.",
+        "Live data unavailable (historical replay). 98765 of particulate in air.",
+        "Live data unavailable (historical replay). 2 PM is a safe time to jog outside.",
+        "Live data unavailable (historical replay). Air is perfectly safe to go outside.",
+        "Live data unavailable (historical replay). दोपहर बाहर जाना पूरी तरह सुरक्षित है।",
+        "Live data unavailable (historical replay). कमरे में मनी प्लांट रखें।",
+        "Live data unavailable (historical replay). வெளியே செல்ல பாதுகாப்பானது.",
+        "Live data unavailable (historical replay). Take 2 puffs of your steroid inhaler.",
+        "Live data unavailable (historical replay). No rain forecast and air is completely safe.",
+        "Live data unavailable (historical replay). "
+        "No rain is forecast and air is completely safe.",
+        "Live data unavailable (historical replay). No traffic makes 2 PM a safe window.",
+        "Live data unavailable (historical replay). Buy a snake plant and avoid dry sweeping.",
+    )
+    for text in bad_claims:
+        ok, reasons = validate_narrative(text, bundle)
+        assert ok is False, f"Expected validator rejection for: {text!r}"
+        assert reasons
+
+    valid_negations = (
+        "Live data unavailable (historical replay). Outdoor air is not completely safe today.",
+        "Live data unavailable (historical replay). Houseplants do not remove PM2.5 indoors.",
+        "Live data unavailable (historical replay). दोपहर बाहर जाना पूरी तरह सुरक्षित नहीं है।",
+        "Live data unavailable (historical replay). कमरे में मनी प्लांट न रखें।",
+    )
+    for ok_text in valid_negations:
+        assert validate_narrative(ok_text, bundle)[0] is True
+
+    expired = bundle.model_copy(update={"issued_at": int(time.time()) - (7 * 3600)})
+    expired_sig = sign_evidence_bundle(expired)
+    assert verify_evidence_bundle(expired, expired_sig) is False

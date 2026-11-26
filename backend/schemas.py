@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 LanguageCode = Literal["en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"]
 FlexibilityType = Literal["fixed", "flexible"]
@@ -102,6 +103,9 @@ class DataProvenance(BaseModel):
     is_fallback_replay: bool
     is_partial_fallback: bool = False
     fallback_slots: int = 0
+    hourly_fallback_slots: int = 0
+    multiday_fallback_slots: int = 0
+    is_multiday_fallback: bool = False
     spatial_resolution: str = "~40 km CAMS Global (3-hourly interpolated) + NWP Weather"
     spatial_note: str
 
@@ -111,7 +115,7 @@ class GoldenWindow(BaseModel):
 
     start_hour: int
     end_hour: int
-    hours: list[int]
+    hours: list[int] = Field(default_factory=list, max_length=24)
     window_label: str
     mean_pm25: float
     mean_naqi: int
@@ -181,8 +185,8 @@ class AirSnapshotResponse(BaseModel):
     morning_inversion_ceiling_m: float
     meteorology_regime: str
     golden_window: GoldenWindow
-    hourly: list[HourlyAirPoint]
-    daily_outlook: list[DailyAirOutlook] = Field(default_factory=list)
+    hourly: list[HourlyAirPoint] = Field(..., max_length=48)
+    daily_outlook: list[DailyAirOutlook] = Field(default_factory=list, max_length=10)
     provenance: DataProvenance
 
 
@@ -194,8 +198,8 @@ class PlanRequest(BaseModel):
     city: str = Field(default="delhi", min_length=1, max_length=100)
     area_name: str | None = Field(default=None, max_length=80)
     state: str | None = Field(default=None, max_length=80)
-    lat: float | None = Field(default=None, ge=-90.0, le=90.0)
-    lon: float | None = Field(default=None, ge=-180.0, le=180.0)
+    lat: float | None = Field(default=None, ge=6.0, le=37.5)
+    lon: float | None = Field(default=None, ge=68.0, le=97.5)
     preset_id: str | None = Field(default=None, max_length=60)
     user_category: UserCategory | None = None
     language: LanguageCode = "en"
@@ -212,6 +216,13 @@ class PlanRequest(BaseModel):
     simulate_stale: bool = False
     skip_llm: bool = False
     symptom_notes: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _validate_coordinate_pair(self) -> PlanRequest:
+        """Require lat and lon to be supplied together or omitted together."""
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("Both 'lat' and 'lon' must be provided together.")
+        return self
 
 
 class RoutineItemResult(BaseModel):
@@ -233,7 +244,7 @@ class RoutineItemResult(BaseModel):
     baseline_dose_ug: float
     optimized_dose_ug: float
     dose_avoided_ug: float
-    mitigation_steps: list[str]
+    mitigation_steps: list[str] = Field(default_factory=list, max_length=12)
     rationale: str
 
 
@@ -278,12 +289,12 @@ class SanctuaryPlan(BaseModel):
     """Complete indoor air quality and sanctuary room recommendation."""
 
     sanctuary_room: str
-    room_scores: list[RoomScore]
+    room_scores: list[RoomScore] = Field(..., max_length=20)
     window_advice: WindowVentilationAdvice
     co2_safety_note: str
     no_houseplants_note: str
-    applicable_hacks: list[IAQHack]
-    personalized_alerts: list[str]
+    applicable_hacks: list[IAQHack] = Field(default_factory=list, max_length=20)
+    personalized_alerts: list[str] = Field(default_factory=list, max_length=20)
 
 
 class BreatheLessLedger(BaseModel):
@@ -296,7 +307,7 @@ class BreatheLessLedger(BaseModel):
     cigarettes_avoided: float
     label: str = "Modeled Estimate"
     formula_summary: str
-    substitutions: list[str]
+    substitutions: list[str] = Field(default_factory=list, max_length=40)
     limitations: str
 
 
@@ -314,7 +325,7 @@ class EmitLessLedger(BaseModel):
     phone_charges_saved: int = 0
     label: str = "Modeled Estimate"
     formula_summary: str
-    substitutions: list[str]
+    substitutions: list[str] = Field(default_factory=list, max_length=20)
     limitations: str
 
 
@@ -340,14 +351,14 @@ class GroundedMetrics(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    pm25: list[float] = Field(default_factory=list)
-    naqi: list[float] = Field(default_factory=list)
-    dose_ug: list[float] = Field(default_factory=list)
-    cigarettes: list[float] = Field(default_factory=list)
-    co2_g: list[float] = Field(default_factory=list)
-    co2_kg: list[float] = Field(default_factory=list)
-    tailpipe_mg: list[float] = Field(default_factory=list)
-    pct: list[float] = Field(default_factory=list)
+    pm25: list[float] = Field(default_factory=list, max_length=256)
+    naqi: list[float] = Field(default_factory=list, max_length=256)
+    dose_ug: list[float] = Field(default_factory=list, max_length=256)
+    cigarettes: list[float] = Field(default_factory=list, max_length=256)
+    co2_g: list[float] = Field(default_factory=list, max_length=256)
+    co2_kg: list[float] = Field(default_factory=list, max_length=256)
+    tailpipe_mg: list[float] = Field(default_factory=list, max_length=256)
+    pct: list[float] = Field(default_factory=list, max_length=256)
 
 
 class EvidenceBundle(BaseModel):
@@ -365,13 +376,14 @@ class EvidenceBundle(BaseModel):
     emergency_message: str | None = None
     provenance: DataProvenance
     air_snapshot: AirSnapshotResponse
-    routine_plan: list[RoutineItemResult]
+    routine_plan: list[RoutineItemResult] = Field(..., max_length=40)
     sanctuary_plan: SanctuaryPlan
     breathe_less: BreatheLessLedger
     emit_less: EmitLessLedger
     profile_summary: ProfileRiskSummary | None = None
     grounded_metrics: GroundedMetrics = Field(default_factory=GroundedMetrics)
-    grounded_numbers: list[float] = Field(default_factory=list)
+    grounded_numbers: list[float] = Field(default_factory=list, max_length=512)
+    issued_at: int = Field(default_factory=lambda: int(time.time()))
 
 
 class PlanResponse(BaseModel):

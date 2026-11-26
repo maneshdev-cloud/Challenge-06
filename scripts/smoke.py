@@ -26,7 +26,7 @@ def _check(label: str, passed: bool, detail: str = "") -> bool:
 
 def run_smoke(base_url: str | None = None) -> int:
     """Execute contract and security header smoke checks against ASGI app or live HTTP base."""
-    os.environ.setdefault("PRANA_BUNDLE_SECRET", "smoke-test-secret-key")
+    os.environ.setdefault("PRANA_BUNDLE_SECRET", "smoke-test-secret-key-at-least-32b")
     checks: list[bool] = []
 
     if base_url:

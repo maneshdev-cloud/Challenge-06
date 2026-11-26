@@ -26,9 +26,8 @@ export default function DataFooter({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs text-slate-600">
           <Radio
-            className={`h-3.5 w-3.5 ${
-              isFallback || isPartial ? "text-amber-600" : "text-emerald-600"
-            }`}
+            className={`h-3.5 w-3.5 ${isFallback || isPartial ? "text-amber-600" : "text-emerald-600"
+              }`}
             aria-hidden="true"
           />
           <span className="font-semibold text-slate-800">
@@ -56,6 +55,24 @@ export default function DataFooter({
         </button>
       </div>
 
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px] text-slate-600">
+        <span>
+          <strong>Emergency Notice:</strong> Keyword triage is best-effort only—call{" "}
+          <a href="tel:108" className="font-bold text-rose-700 underline underline-offset-2">
+            108
+          </a>{" "}
+          /{" "}
+          <a href="tel:112" className="font-bold text-rose-700 underline underline-offset-2">
+            112
+          </a>{" "}
+          directly for acute breathing distress.
+        </span>
+        <span>
+          <strong>Privacy:</strong> Household profiles stay in browser storage; optional GPS and
+          room photos are sent ephemerally for forecast/audit lookup only.
+        </span>
+      </div>
+
       {expanded && (
         <div className="mt-3 space-y-3 border-t border-slate-100 pt-3 text-xs text-slate-600">
           {provenance && (
@@ -72,11 +89,10 @@ export default function DataFooter({
               type="button"
               aria-pressed={simulateStale}
               onClick={onToggleStale}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
-                simulateStale
-                  ? "border-amber-400 bg-amber-50 text-amber-900"
-                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-              }`}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${simulateStale
+                ? "border-amber-400 bg-amber-50 text-amber-900"
+                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
             >
               <AlertTriangle
                 className={`h-3.5 w-3.5 ${simulateStale ? "text-amber-600" : "text-slate-500"}`}

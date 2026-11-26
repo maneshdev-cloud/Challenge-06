@@ -77,4 +77,51 @@ describe("API client resilience", () => {
       language: "en"
     });
   });
+
+  it("extracts readable JSON error details and does not retry POST failures twice", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      text: async () => JSON.stringify({ detail: "Too many requests right now; please retry." })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(generatePlan({ city: "delhi" })).rejects.toThrow(
+      "Too many requests right now; please retry."
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const postNetErr = vi.fn().mockRejectedValue(Object.assign(new Error("down"), { name: "TypeError" }));
+    vi.stubGlobal("fetch", postNetErr);
+    await expect(generatePlan({ city: "delhi" })).rejects.toThrow("down");
+    expect(postNetErr).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps request timeout active through response body consumption", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((_url, init) =>
+          Promise.resolve({
+            ok: true,
+            json: () =>
+              new Promise((_resolve, reject) => {
+                init.signal.addEventListener("abort", () =>
+                  reject(Object.assign(new Error("Aborted"), { name: "AbortError" }))
+                );
+              })
+          })
+        )
+      );
+
+      const pending = generatePlan({ city: "delhi" });
+      const settled = expect(pending).rejects.toThrow("Request timed out");
+      await vi.advanceTimersByTimeAsync(25001);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

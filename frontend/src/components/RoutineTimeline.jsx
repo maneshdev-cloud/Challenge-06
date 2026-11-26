@@ -11,6 +11,7 @@ import {
   Users,
   Volume2
 } from "lucide-react";
+import { getHtmlLang } from "../data/constants";
 import { copyToClipboard } from "../utils/formatters";
 import {
   canUseSpeechSynthesis,
@@ -269,7 +270,7 @@ export default function RoutineTimeline({
               {ttsHint}
             </p>
           )}
-          <div className="mt-2.5 text-sm text-slate-100">
+          <div lang={getHtmlLang(bundle?.language)} className="mt-2.5 text-sm text-slate-100">
             <FormattedText text={narrative} dark />
           </div>
         </div>

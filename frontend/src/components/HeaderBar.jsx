@@ -28,7 +28,9 @@ export default function HeaderBar({
   const [langOpen, setLangOpen] = useState(false);
 
   const locRef = useRef(null);
+  const locButtonRef = useRef(null);
   const langRef = useRef(null);
+  const langButtonRef = useRef(null);
 
   const cityKeyLower = city?.toLowerCase();
   const isFeaturedCity = Boolean(citiesMap?.[cityKeyLower]);
@@ -50,14 +52,20 @@ export default function HeaderBar({
       : cityDisplay || city;
 
   useEffect(() => {
+    if (!locOpen && !langOpen) return;
     function handleOutside(e) {
-      if (locRef.current && !locRef.current.contains(e.target)) setLocOpen(false);
-      if (langRef.current && !langRef.current.contains(e.target)) setLangOpen(false);
+      if (locOpen && locRef.current && !locRef.current.contains(e.target)) setLocOpen(false);
+      if (langOpen && langRef.current && !langRef.current.contains(e.target)) setLangOpen(false);
     }
     function handleEscape(e) {
-      if (e.key === "Escape") {
+      if (e.key !== "Escape") return;
+      if (locOpen) {
         setLocOpen(false);
+        locButtonRef.current?.focus();
+      }
+      if (langOpen) {
         setLangOpen(false);
+        langButtonRef.current?.focus();
       }
     }
     document.addEventListener("mousedown", handleOutside);
@@ -66,7 +74,7 @@ export default function HeaderBar({
       document.removeEventListener("mousedown", handleOutside);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [locOpen, langOpen]);
 
   return (
     <header className="sticky top-0 z-50 border-b border-slate-200 bg-white shadow-sm">
@@ -113,6 +121,7 @@ export default function HeaderBar({
         <div className="flex items-center gap-2">
           <div ref={locRef} className="relative">
             <button
+              ref={locButtonRef}
               type="button"
               disabled={loading || locating}
               aria-expanded={locOpen}
@@ -143,7 +152,10 @@ export default function HeaderBar({
                 areaName={areaName}
                 locating={locating}
                 gpsError={gpsError}
-                onClose={() => setLocOpen(false)}
+                onClose={(restoreFocus = false) => {
+                  setLocOpen(false);
+                  if (restoreFocus === true) locButtonRef.current?.focus();
+                }}
                 onCityChange={onCityChange}
                 onAreaChange={onAreaChange}
                 onSelectGeocode={onSelectGeocode}
@@ -154,6 +166,7 @@ export default function HeaderBar({
 
           <div ref={langRef} className="relative">
             <button
+              ref={langButtonRef}
               type="button"
               disabled={loading}
               aria-expanded={langOpen}

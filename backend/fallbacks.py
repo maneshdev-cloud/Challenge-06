@@ -10,11 +10,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from geo_india import CONSTANTS
+from safety import check_safety_claims, contains_banned_houseplant
 from schemas import EvidenceBundle, LanguageCode, RoomAuditResponse, RoomAuditTip
 
 TopicPayload = tuple[str, list[str], list[str]]
-
-BANNED_HOUSEPLANTS = ("snake plant", "spider plant", "areca palm", "money plant", "houseplant")
 
 LOCALIZED_ROOM_SUMMARIES: dict[str, str] = {
     "hi": (
@@ -293,7 +292,10 @@ def _topic_indoor(bundle: EvidenceBundle) -> TopicPayload:
             "Do 15-20 minutes of gentle yoga, stretching, or light hallway walking.",
             "Stay hydrated and rinse your nose/throat with plain water after commuting.",
         ],
-        ["Avoid heavy HIIT/cardio above NAQI 200—fast breathing pulls deeper dust."],
+        [
+            "Avoid heavy HIIT/cardio when outdoor air hits Poor or Very Poor—"
+            "fast breathing pulls deeper dust."
+        ],
     )
 
 
@@ -503,7 +505,7 @@ def _cost_within_budget(cost: str) -> bool:
 
 
 def _sanitize_audit_tip(item: Any) -> RoomAuditTip | None:
-    """Validate budget bounds (Rs 0-500) and reject prohibited houseplant claims in a tip."""
+    """Validate budget bounds (Rs 0-500) and reject prohibited claims/plants via shared rules."""
     if not isinstance(item, dict):
         return None
     title = str(item.get("title") or "").strip()
@@ -512,8 +514,8 @@ def _sanitize_audit_tip(item: Any) -> RoomAuditTip | None:
     why = str(item.get("why_it_helps") or "").strip()
     if not (title and action and why and _cost_within_budget(cost)):
         return None
-    combined = f"{title} {action} {why}".lower()
-    if any(plant in combined for plant in BANNED_HOUSEPLANTS):
+    combined = f"{title}. {action}. {why}"
+    if contains_banned_houseplant(combined) or check_safety_claims(combined):
         return None
     try:
         return RoomAuditTip(title=title, cost_inr=cost, action=action, why_it_helps=why)
@@ -536,7 +538,7 @@ def parse_room_audit_json(
     raw_tips = payload.get("tips")
     if not room_summary or not isinstance(raw_tips, list) or not raw_tips:
         return None
-    if any(plant in room_summary.lower() for plant in BANNED_HOUSEPLANTS):
+    if contains_banned_houseplant(room_summary) or check_safety_claims(room_summary):
         return None
 
     tips = [tip for item in raw_tips[:3] if (tip := _sanitize_audit_tip(item)) is not None]

@@ -118,6 +118,19 @@ def _concentration_at_step(
     return pt.pm2_5, pt.cpcb_naqi
 
 
+@dataclass(frozen=True)
+class _ScheduleOutcome:
+    """Normalized scheduling decision returned across fixed and flexible branches."""
+
+    rec_hour: int
+    badge: str
+    opt_micro: str
+    rec_mask: MaskType
+    steps: list[str]
+    rationale: str
+    used_slider: bool = False
+
+
 def _evaluate_interval_exposure(
     hourly_points: list[HourlyAirPoint],
     query: _IntervalQuery,
@@ -132,25 +145,28 @@ def _evaluate_interval_exposure(
 
     remaining = query.duration_min
     step_idx = max(0, min(23, query.start_hour))
-    total_dose, weighted_pm25, weighted_naqi, peak_pm25 = 0.0, 0.0, 0.0, 0.0
+    acc = [0.0, 0.0, 0.0, 0.0]  # dose, weighted_pm25, weighted_naqi, peak_pm25
 
     while remaining > 0:
         chunk_min = min(60, remaining)
         c_pm25, c_naqi = _concentration_at_step(
             hourly_points, step_idx, next_day_pm25, next_day_naqi
         )
-        total_dose += compute_inhaled_dose_ug(
+        acc[0] += compute_inhaled_dose_ug(
             c_pm25, query.microenv_key, query.activity_level, chunk_min, query.mask
         )
-        weighted_pm25 += c_pm25 * chunk_min
-        weighted_naqi += c_naqi * chunk_min
-        peak_pm25 = max(peak_pm25, c_pm25)
+        acc[1] += c_pm25 * chunk_min
+        acc[2] += c_naqi * chunk_min
+        acc[3] = max(acc[3], c_pm25)
         remaining -= chunk_min
         step_idx += 1
 
-    mean_pm25 = round(weighted_pm25 / query.duration_min, 1)
-    mean_naqi = int(round(weighted_naqi / query.duration_min))
-    return round(total_dose, 2), mean_pm25, mean_naqi, round(peak_pm25, 1)
+    return (
+        round(acc[0], 2),
+        round(acc[1] / query.duration_min, 1),
+        int(round(acc[2] / query.duration_min)),
+        round(acc[3], 1),
+    )
 
 
 def compute_interval_dose_ug(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -209,11 +225,13 @@ def _is_member_sensitive(member: Any) -> bool:
 
 
 def _has_sensitive_member(req: PlanRequest, member_name: str) -> bool:
-    """Return True if the named member (or household fallback) is respiratory-sensitive."""
+    """Return True if named member, household, or selected category is respiratory-sensitive."""
     for m in req.members:
         if m.name == member_name:
             return _is_member_sensitive(m)
-    return any(_is_member_sensitive(m) for m in req.members)
+    if any(_is_member_sensitive(m) for m in req.members):
+        return True
+    return req.user_category in {"seniors", "students_kids"}
 
 
 def _choose_mask(
@@ -354,13 +372,12 @@ def _schedule_flexible_activity(
     snapshot: AirSnapshotResponse,
     sensitive: bool,
     slot_info: tuple[int, float, float, float, bool],
-) -> tuple[str, str, MaskType, list[str], str]:
+) -> _ScheduleOutcome:
     """Shift flexible outdoor activity to cleanest slot or Sanctuary Room."""
     rec_h, c_orig, c_rec, c_rec_peak, is_slider = slot_info
     rec_mask: MaskType = act.current_mask
-    no_win = not snapshot.golden_window.has_meaningful_window
-    if no_win and not is_slider and sensitive:
-        return _indoor_override_result(req, rec_mask)
+    if not snapshot.golden_window.has_meaningful_window and not is_slider and sensitive:
+        return _ScheduleOutcome(rec_h, *_indoor_override_result(req, rec_mask), is_slider)
 
     steps = [
         (
@@ -370,19 +387,27 @@ def _schedule_flexible_activity(
         if rec_h != act.planned_hour
         else f"Timing at {rec_h:02d}:00 already sits in a lower-exposure slot."
     ]
-    midday_cutoff = float(ENGINE_PARAMS["mask_thresholds_pm25"]["midday_flexible_n95"])
-    if c_rec_peak > midday_cutoff and req.budget_tier != "rs_0":
+    if (
+        c_rec_peak > float(ENGINE_PARAMS["mask_thresholds_pm25"]["midday_flexible_n95"])
+        and req.budget_tier != "rs_0"
+    ):
         rec_mask = "n95"
         steps.append("Peak outdoor dust crosses Poor/Very Poor—add a fitted N95 mask.")
     else:
         steps.append("Pick tree-lined lanes away from main arterial intersections.")
 
-    rationale = (
-        f"Flexible slot optimized over {act.duration_min} min from {rec_h:02d}:00 "
-        f"(mixing height {snapshot.hourly[rec_h].boundary_layer_height:.0f} m)."
+    return _ScheduleOutcome(
+        rec_hour=rec_h,
+        badge=_flexible_badge(req, rec_h, act.planned_hour, is_slider),
+        opt_micro="walk_sidewalk",
+        rec_mask=rec_mask,
+        steps=steps,
+        rationale=(
+            f"Flexible slot optimized over {act.duration_min} min from {rec_h:02d}:00 "
+            f"(mixing height {snapshot.hourly[rec_h].boundary_layer_height:.0f} m)."
+        ),
+        used_slider=is_slider,
     )
-    badge = _flexible_badge(req, rec_h, act.planned_hour, is_slider)
-    return badge, "walk_sidewalk", rec_mask, steps, rationale
 
 
 def _format_dose_substitution(
@@ -391,19 +416,16 @@ def _format_dose_substitution(
     opt_spec: tuple[str, float, float, MaskType],
 ) -> str:
     """Format formula substitution string for Show Math transparency."""
-    base_micro, c_orig, base_dose, orig_mask = base_spec
-    opt_micro, c_rec, opt_dose, rec_mask = opt_spec
     v_e = float(CONSTANTS["usepa_ventilation_m3_hr"].get(act.activity_level, 1.25))
-    k_b = float(CONSTANTS["microenv_multipliers"][base_micro])
-    k_o = float(CONSTANTS["microenv_multipliers"][opt_micro])
-    eta_b = float(CONSTANTS["mask_filtration_efficiency"][orig_mask])
-    eta_o = float(CONSTANTS["mask_filtration_efficiency"][rec_mask])
+    micro_map = CONSTANTS["microenv_multipliers"]
+    mask_map = CONSTANTS["mask_filtration_efficiency"]
     dt_hr = act.duration_min / 60.0
-    avoided = round(base_dose - opt_dose, 2)
+    avoided = round(base_spec[2] - opt_spec[2], 2)
     return (
-        f"{act.name} ({act.duration_min}m): Base avg {c_orig}*{k_b}*{v_e}*{dt_hr:.2f}h"
-        f"*(1-{eta_b})={base_dose} ug | Opt avg {c_rec}*{k_o}*{v_e}*{dt_hr:.2f}h"
-        f"*(1-{eta_o})={opt_dose} ug (Saved {avoided} ug)"
+        f"{act.name} ({act.duration_min}m): Base avg {base_spec[1]}*{micro_map[base_spec[0]]}"
+        f"*{v_e}*{dt_hr:.2f}h*(1-{mask_map[base_spec[3]]})={base_spec[2]} ug | Opt avg "
+        f"{opt_spec[1]}*{micro_map[opt_spec[0]]}*{v_e}*{dt_hr:.2f}h*(1-{mask_map[opt_spec[3]]})"
+        f"={opt_spec[2]} ug (Saved {avoided} ug)"
     )
 
 
@@ -413,32 +435,35 @@ def _choose_flexible_outcome(
     snapshot: AirSnapshotResponse,
     ctx: _ScheduleContext,
     base_summary: tuple[bool, float],
-) -> tuple[int, str, str, MaskType, list[str], str, bool]:
+) -> _ScheduleOutcome:
     """Select start hour (or what-if slider hour) and build flexible mitigation details."""
-    sensitive, c_orig = base_summary
     is_slider = ctx.allow_slider and req.walk_override_hour is not None
-    if is_slider and req.walk_override_hour is not None:
-        rec_h = req.walk_override_hour
-    else:
-        template = _IntervalQuery(
-            0, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
+    rec_h = (
+        req.walk_override_hour
+        if is_slider and req.walk_override_hour is not None
+        else _find_best_start_hour_for_duration(
+            snapshot.hourly,
+            _IntervalQuery(
+                0, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
+            ),
+            next_day_pm25=ctx.next_day_pm25,
         )
-        rec_h = _find_best_start_hour_for_duration(
-            snapshot.hourly, template, next_day_pm25=ctx.next_day_pm25
-        )
-    walk_query = _IntervalQuery(
-        rec_h, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
     )
     _, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
         snapshot.hourly,
-        walk_query,
+        _IntervalQuery(
+            rec_h, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
+        ),
         next_day_pm25=ctx.next_day_pm25,
         next_day_naqi=ctx.next_day_naqi,
     )
-    badge, opt_micro, rec_mask, steps, rationale = _schedule_flexible_activity(
-        act, req, snapshot, sensitive, (rec_h, c_orig, c_rec_prev, c_rec_peak, is_slider)
+    return _schedule_flexible_activity(
+        act,
+        req,
+        snapshot,
+        base_summary[0],
+        (rec_h, base_summary[1], c_rec_prev, c_rec_peak, is_slider),
     )
-    return rec_h, badge, opt_micro, rec_mask, steps, rationale, is_slider
 
 
 def _assemble_routine_item(
@@ -448,28 +473,25 @@ def _assemble_routine_item(
     copy_info: tuple[str, list[str], str],
 ) -> RoutineItemResult:
     """Construct immutable RoutineItemResult schema from evaluated baseline & optimal runs."""
-    c_orig, naqi_orig, base_dose = base_metrics
-    rec_h, c_rec, naqi_rec, opt_dose, rec_mask = opt_metrics
-    badge, steps, rationale = copy_info
     return RoutineItemResult(
         id=act.id,
         name=act.name,
         member_name=act.member_name,
         flexibility=act.flexibility,
-        badge=badge,
+        badge=copy_info[0],
         original_hour=act.planned_hour,
-        recommended_hour=rec_h,
+        recommended_hour=opt_metrics[0],
         duration_min=act.duration_min,
-        original_pm25=c_orig,
-        recommended_pm25=c_rec,
-        original_naqi=naqi_orig,
-        recommended_naqi=naqi_rec,
-        recommended_mask=rec_mask,
-        baseline_dose_ug=base_dose,
-        optimized_dose_ug=opt_dose,
-        dose_avoided_ug=round(base_dose - opt_dose, 2),
-        mitigation_steps=steps,
-        rationale=rationale,
+        original_pm25=base_metrics[0],
+        recommended_pm25=opt_metrics[1],
+        original_naqi=base_metrics[1],
+        recommended_naqi=opt_metrics[2],
+        recommended_mask=opt_metrics[4],
+        baseline_dose_ug=base_metrics[2],
+        optimized_dose_ug=opt_metrics[3],
+        dose_avoided_ug=round(base_metrics[2] - opt_metrics[3], 2),
+        mitigation_steps=copy_info[1],
+        rationale=copy_info[2],
     )
 
 
@@ -482,35 +504,48 @@ def _schedule_single_activity(
     """Optimize and evaluate one activity item, returning result and dose totals."""
     sensitive = _has_sensitive_member(req, act.member_name)
     base_micro = ctx.base_commute_micro if act.is_commute else "walk_sidewalk"
-    base_q = _IntervalQuery(
-        act.planned_hour, act.duration_min, base_micro, act.activity_level, act.current_mask
-    )
-    base_dose, c_orig, naqi_orig, c_orig_peak = _evaluate_interval_exposure(
-        snapshot.hourly, base_q, next_day_pm25=ctx.next_day_pm25, next_day_naqi=ctx.next_day_naqi
+    base_eval = _evaluate_interval_exposure(
+        snapshot.hourly,
+        _IntervalQuery(
+            act.planned_hour, act.duration_min, base_micro, act.activity_level, act.current_mask
+        ),
+        next_day_pm25=ctx.next_day_pm25,
+        next_day_naqi=ctx.next_day_naqi,
     )
     if act.flexibility == "fixed":
-        rec_h, badge, used_slider = act.planned_hour, "FIXED • MITIGATED", False
-        opt_micro, rec_mask, steps, rationale = _schedule_fixed_activity(
-            act, req, c_orig_peak, sensitive, (base_micro, ctx.target_commute_micro)
+        fixed_plan = _schedule_fixed_activity(
+            act, req, base_eval[3], sensitive, (base_micro, ctx.target_commute_micro)
+        )
+        outcome = _ScheduleOutcome(
+            act.planned_hour, "FIXED • MITIGATED", *fixed_plan, used_slider=False
         )
     else:
-        rec_h, badge, opt_micro, rec_mask, steps, rationale, used_slider = _choose_flexible_outcome(
-            act, req, snapshot, ctx, (sensitive, c_orig)
-        )
-    opt_q = _IntervalQuery(rec_h, act.duration_min, opt_micro, act.activity_level, rec_mask)
-    opt_dose, c_rec, naqi_rec, _ = _evaluate_interval_exposure(
-        snapshot.hourly, opt_q, next_day_pm25=ctx.next_day_pm25, next_day_naqi=ctx.next_day_naqi
+        outcome = _choose_flexible_outcome(act, req, snapshot, ctx, (sensitive, base_eval[1]))
+
+    opt_eval = _evaluate_interval_exposure(
+        snapshot.hourly,
+        _IntervalQuery(
+            outcome.rec_hour,
+            act.duration_min,
+            outcome.opt_micro,
+            act.activity_level,
+            outcome.rec_mask,
+        ),
+        next_day_pm25=ctx.next_day_pm25,
+        next_day_naqi=ctx.next_day_naqi,
     )
-    base_spec = (base_micro, c_orig, base_dose, act.current_mask)
-    opt_spec = (opt_micro, c_rec, opt_dose, rec_mask)
-    sub_text = _format_dose_substitution(act, base_spec, opt_spec)
+    sub_text = _format_dose_substitution(
+        act,
+        (base_micro, base_eval[1], base_eval[0], act.current_mask),
+        (outcome.opt_micro, opt_eval[1], opt_eval[0], outcome.rec_mask),
+    )
     item = _assemble_routine_item(
         act,
-        (c_orig, naqi_orig, base_dose),
-        (rec_h, c_rec, naqi_rec, opt_dose, rec_mask),
-        (badge, steps, rationale),
+        (base_eval[1], base_eval[2], base_eval[0]),
+        (outcome.rec_hour, opt_eval[1], opt_eval[2], opt_eval[0], outcome.rec_mask),
+        (outcome.badge, outcome.steps, outcome.rationale),
     )
-    return item, base_dose, opt_dose, sub_text, used_slider
+    return item, base_eval[0], opt_eval[0], sub_text, outcome.used_slider
 
 
 def schedule_activities(
@@ -522,12 +557,13 @@ def schedule_activities(
     """Run constraint-aware scheduling and hourly-integrated USEPA dosimetry."""
     arai_map = CONSTANTS["arai_transport_emissions"]
     base_micro = str(arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])["microenv"])
-    target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
-    target_micro = str(target_spec["microenv"])
+    target_micro = str(
+        arai_map.get(req.target_commute_mode, arai_map["electric_metro"])["microenv"]
+    )
 
     results: list[RoutineItemResult] = []
     substitutions: list[str] = []
-    total_base, total_opt = 0.0, 0.0
+    totals = [0.0, 0.0]
     walk_override_applied = False
 
     for act in req.activities:
@@ -536,16 +572,16 @@ def schedule_activities(
             and not walk_override_applied
             and (act.activity_level in PRIMARY_FLEX_LEVELS or act == req.activities[-1])
         )
-        item, base_dose, opt_dose, sub_text, used_slider = _schedule_single_activity(
+        run = _schedule_single_activity(
             act,
             req,
             snapshot,
             _ScheduleContext(base_micro, target_micro, allow_slider, next_day_pm25, next_day_naqi),
         )
-        walk_override_applied = walk_override_applied or used_slider
-        total_base += base_dose
-        total_opt += opt_dose
-        substitutions.append(sub_text)
-        results.append(item)
+        walk_override_applied = walk_override_applied or run[4]
+        totals[0] += run[1]
+        totals[1] += run[2]
+        substitutions.append(run[3])
+        results.append(run[0])
 
-    return results, round(total_base, 2), round(total_opt, 2), substitutions
+    return results, round(totals[0], 2), round(totals[1], 2), substitutions

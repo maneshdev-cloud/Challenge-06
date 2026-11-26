@@ -19,8 +19,8 @@ Most consumer air-quality apps only report a single raw AQI number or tell every
 
 ### Our Neuro-Symbolic Solution & Real-World Impact
 PRANA-AI enforces a strict **Neuro-Symbolic architecture**:
-- **Symbolic Python (`engine.py` facade) owns 100% of the math:** Hourly India CPCB NAQI sub-indices, boundary-layer (`PBLH`) diurnal Golden Windows with a `<15%` flat-curve honesty rule, hourly-integrated USEPA inhaled lung-dose proxies (`Breathe Less`), Clean Air Sanctuary room scoring (`0–100`), and ARAI/WRI commute emissions (`Emit Less`) are packed into an HMAC-SHA256-signed `EvidenceBundle`.
-- **Google Gemini only translates, explains & visually audits rooms:** Reads precomputed server JSON (zero arithmetic in the LLM), translates into **8 Indian languages** (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`), and evaluates room photos for practical **Rs 0–Rs 500** fixes. A post-generation validator catches any ungrounded numbers or banned claims (e.g., recommending houseplants for $\text{PM}_{2.5}$) and seamlessly falls back to a **Deterministic Fallback Engine** so the app never crashes—even offline or without an API key.
+- **Symbolic Python (`engine.py` facade) owns 100% of the math:** Hourly India CPCB NAQI sub-indices, daytime $\text{PM}_{2.5}$ Golden Windows with a `<15%` flat-curve honesty rule paired with `PBLH` morning inversion regime classification, hourly-integrated USEPA inhaled lung-dose proxies (`Breathe Less`, adult-reference $V_E$), Clean Air Sanctuary room scoring (`0–100`), and ARAI/WRI commute emissions (`Emit Less`) are packed into an HMAC-SHA256-signed `EvidenceBundle` with a `6h` TTL.
+- **Google Gemini only translates, explains & visually audits rooms:** Reads precomputed server JSON (zero arithmetic in the LLM), translates into **8 Indian languages** (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`), and evaluates room photos for practical **Rs 0–Rs 500** fixes. A post-generation validator scans unit-anchored metrics, AQI/$\text{PM}_{2.5}$ citations, standalone numbers against exact rounded allowlists, medical dosing prohibitions, and English/Indic banned-claim patterns—seamlessly falling back to the **Deterministic Fallback Engine** whenever validation fails or no API key is set.
 
 ---
 
@@ -28,10 +28,10 @@ PRANA-AI enforces a strict **Neuro-Symbolic architecture**:
 
 - **4 Real-World Vulnerability Profiles & Custom Household Builder:** Switch between `Students & Kids`, `Seniors`, `Delivery Riders`, and `Adults & Commuters` (or customize members including infants age `0+`, rooms, and fixed vs. flexible schedules). Profile alerts adapt deterministically (`Est. NAQI > 100` for sensitive/road-shift profiles vs. `> 150` for adults).
 - **Dynamic Golden Window & 5-Day Outlook (`<15%` Flat-Curve Honesty Rule):** Detects the cleanest daytime 2-hour window against morning inversion peaks across today's 24h forecast and all 5 outlook days, refuses to label stagnant winter pollution `"safe"`, and keeps fixed shifts protected with N95/route harm reduction.
-- **Pre-LLM Medical Emergency Triage (`108 / 112`):** Queries mentioning acute distress (`wheezing`, `can't breathe`, `difficulty breathing`, `chest pain`, `blue lips`, `asthma attack`, `saans nahi`, plus Hindi/Gujarati/Bengali/Tamil/Telugu phrases) short-circuit **before rate limiting and before any LLM call** to surface an ER alert with tappable `108 / 112` dial links.
-- **Separated Dual Impact Ledgers + Show-Math Audit:** Strictly decouples personal **Breathe Less** inhaled dose avoided ($\mu\text{g}$ & Berkeley Earth cigarette equivalents) from **Emit Less** transport savings ($\text{CO}_2\text{e}$ & tailpipe $\text{PM}_{2.5}$), with a transparent **Show Math** formula substitution modal.
-- **Gemini Vision Room IAQ Photo Audit (`POST /v1/audit-room`):** Analyzes room/kitchen photos for window/door gaps, exhaust placement, and dust traps, returning 3 actionable **Rs 0–Rs 500** steps (5 MB streaming cap, JPG/PNG/WebP check, decompression-bomb guard, EXIF metadata stripped cleanly).
-- **Pan-India Live Data, GPS & Offline Historical Replay:** Combines live Open-Meteo `~40 km` CAMS Global + weather forecasts, `/v1/geocode`, `/v1/reverse-geocode`, bounded `15-min` LRU caching, explicit `is_partial_fallback` provenance, and **Data & Judge Mode -> Simulate Stale Data**.
+- **Pre-LLM Medical Emergency Triage (`108 / 112`):** Queries mentioning acute respiratory or cardiac distress across English regex paraphrases, Hinglish, Hindi, Marathi, Kannada, Gujarati, Bengali, Tamil, and Telugu short-circuit **before rate limiting on chat and before any LLM call** to surface tappable `108 / 112` emergency links (keyword detection is best-effort, supplemented by a persistent `108 / 112` emergency notice in the UI).
+- **Separated Dual Impact Ledgers + Show-Math Audit:** Strictly decouples personal **Breathe Less** inhaled dose avoided ($\mu\text{g}$ & Berkeley Earth adult-reference cigarette equivalents) from **Emit Less** transport savings ($\text{CO}_2\text{e}$ & tailpipe $\text{PM}_{2.5}$), with a transparent **Show Math** formula substitution modal.
+- **Gemini Vision Room IAQ Photo Audit (`POST /v1/audit-room`):** Analyzes room/kitchen photos for window/door gaps, exhaust placement, and dust traps, returning 3 actionable **Rs 0–Rs 500** steps (pre-buffer middleware origin/rate-limit check, 5 MB streaming cap, JPG/PNG/WebP check, decompression-bomb guard, EXIF orientation + strip, bounded `current_naqi` `0..500`, sanitized prompt metadata).
+- **Pan-India Live Data, GPS & Offline Historical Replay:** Combines live Open-Meteo `~40 km` CAMS Global + weather forecasts within India bounds (`6.0..37.5 N`, `68.0..97.5 E`), `0.25°` weather cache alignment, cached `/v1/geocode` and `/v1/reverse-geocode`, explicit `is_partial_fallback` provenance, and **Data & Judge Mode -> Simulate Stale Data**.
 - **Accessible Daily Tools:** Web Speech **Listen / Voice Ask**, 1-click School/Office **Clean-Air Note** generator, WhatsApp plan summary sharing, keyboard-accessible WAI-ARIA `tablist` navigation, and installable iOS/Android PWA support.
 
 ---
@@ -77,8 +77,8 @@ flowchart LR
 .
 ├── backend/
 │   ├── main.py                # FastAPI entrypoint & REST routes (/health, /v1/*)
-│   ├── schemas.py             # Strict Pydantic v2 contracts (extra="forbid")
-│   ├── request_guards.py      # Prefix strip, security headers, origin check, bounded rate limiter
+│   ├── schemas.py             # Pydantic v2 contracts (extra="forbid" on chat, members, rooms & activities; preset-compatible PlanRequest)
+│   ├── request_guards.py      # Prefix strip, security headers, origin check, 512 KB/5 MB POST body guards & bounded rate limiter
 │   ├── engine.py              # Symbolic planning facade & signed metric allowlists
 │   ├── air_quality.py         # CPCB NAQI sub-indices, Golden Window & 5-day outlook
 │   ├── exposure.py            # Hourly USEPA dose model & constraint-aware routine optimizer
@@ -92,17 +92,17 @@ flowchart LR
 │   ├── fallbacks.py           # 8-language deterministic plan/room templates & EN/Hinglish Q&A
 │   ├── image_audit.py         # 5 MB streaming upload guard, Pillow bomb cap & EXIF stripping
 │   ├── data/                  # Externalized constants.json, presets.json, fallback_replay.json
-│   └── tests/                 # 6 unit & integration suites (51 pytest tests)
+│   └── tests/                 # 7 unit, Hypothesis property & integration suites (62 pytest tests)
 ├── frontend/
 │   └── src/
 │       ├── App.jsx            # Dashboard shell & error boundary composition
 │       ├── api/client.js      # Timeout/retry fetch client + AbortController propagation
 │       ├── hooks/             # usePranaPlan.js & pure planReducer.js state transitions
 │       ├── components/        # Modular UI panels (HeaderBar, HeroAirCard, SmogChartCard, etc.)
-│       ├── utils/ & data/     # Formatters, PWA helpers, and UI constants
-│       └── __tests__/         # 12 Vitest + RTL test files (30 frontend tests)
+│       ├── utils/ & data/     # Formatters, RWA/.ics helpers, PWA helpers, and UI constants
+│       └── __tests__/         # 14 Vitest + RTL test files (36 frontend tests)
 ├── docs/                      # ARCHITECTURE.md, METHODOLOGY.md, DEPLOYMENT.md, BUILD_IN_PUBLIC.md, screenshots/
-├── scripts/smoke.py           # End-to-end API, HMAC 403, CSRF Origin & upload 415 smoke script
+├── scripts/                   # smoke.py (API/security contract checks) & check-bundle.mjs (gzip budget gate)
 ├── SECURITY.md                # Threat model, verified controls & vulnerability disclosure policy
 ├── vercel.json / render.yaml  # Production routing, CSP/HSTS headers & deployment specs
 └── .github/workflows/         # CI verification gate (ci.yml) & optional 5-min ping (keep-warm.yml)
@@ -141,18 +141,23 @@ npm run dev
 
 ### Automated Verification Commands
 ```bash
-# Backend: Lint, Complexity (C901 <= 10), Pylint, Static Types, Tests & Contract Smoke
-python -m ruff check backend
+# Backend: Format, Lint, Complexity (C901 <= 10), Raw Pylint (10/10), Bandit, Audit, Types, Coverage & Smoke
+python -m ruff format --check backend scripts
+python -m ruff check backend scripts
 python -m ruff check --select C901,B backend
-python -m pylint --disable=too-many-locals,fixme backend/*.py
+python -m pylint backend/*.py
+python -m bandit -r backend -x backend/tests -q
+python -m pip_audit -r backend/requirements.txt
 python -m mypy backend
-python -m pytest -v backend/tests
+python -m pytest -v --cov --cov-report=term-missing --cov-fail-under=90 backend/tests
 python scripts/smoke.py
 
-# Frontend: ESLint + jsx-a11y, Vitest + React Testing Library & Production Bundle
+# Frontend: Audit, ESLint + jsx-a11y, Vitest Coverage, Build & Bundle Budget Gate
+npm --prefix frontend run audit:deps
 npm --prefix frontend run lint
-npm --prefix frontend run test
+npm --prefix frontend run test:coverage
 npm --prefix frontend run build
+npm --prefix frontend run bundle:check
 ```
 
 ---
@@ -163,12 +168,12 @@ All quality, safety, and resilience claims below reflect concrete code implement
 
 | Quality Pillar | Implemented Controls | Verification Path & Documentation |
 | :--- | :--- | :--- |
-| **Code Quality** | 15 single-responsibility backend modules (`engine.py` facade, isolated `gemini_client.py`, `fallbacks.py`, `request_guards.py`); strict Pydantic schemas; Vite + React reducer/hook decomposition (`planReducer.js`). | Enforced via `ruff` (`E,F,W,I,UP,B,SIM` + `C901`), `pylint`, `mypy`, and `eslint` in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
-| **Security** | Server-only secrets; HMAC-SHA256 bundle signing (`403` on tamper); pre-LLM ER triage; CSRF `Origin` checks; proxy-trusted IP rate limits (`120 req/60s`); 5 MB JPG/PNG/WebP EXIF strip & pixel-bomb cap; CSP/HSTS/COOP/`nosniff` headers. | Verified in `backend/tests/test_safety.py`, `test_request_guards.py`, `test_api.py`, [`scripts/smoke.py`](scripts/smoke.py), and detailed in [`SECURITY.md`](SECURITY.md). |
-| **Efficiency** | Bounded `900s` / `256`-entry LRU Open-Meteo cache; concurrent async AQ+weather fetches; `8.0s` LLM `asyncio.wait_for` cap with pooled clients; `429`/`404` cooldown caches; client `AbortController` + split Recharts/Lucide Vite chunks. | Verified in `backend/tests/test_data_fetcher.py`, `test_explainer.py`, and [`frontend/vite.config.js`](frontend/vite.config.js). |
-| **Testing** | **51** backend pytest tests across 6 suites (`test_api`, `test_data_fetcher`, `test_engine`, `test_explainer`, `test_request_guards`, `test_safety`), **6** API/security smoke checks, and **30** Vitest + RTL tests across 12 frontend suites. | Runnable directly via `pytest`, `python scripts/smoke.py`, and `npm --prefix frontend run test`. |
+| **Code Quality** | 15 single-responsibility backend modules (`engine.py` facade, isolated `gemini_client.py`, `fallbacks.py`, `request_guards.py`); strict Pydantic schemas; Vite + React reducer/hook decomposition (`planReducer.js`). | Enforced via `ruff` (`format`, `E,F,W,I,UP,B,SIM`, `C901`), raw `pylint` (`10.00/10`), `mypy`, `eslint`, and `.github/dependabot.yml` in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
+| **Security** | Server-only secrets; HMAC-SHA256 bundle signing (`403` on tamper); pre-LLM ER triage; Unicode numeral/superscript metric normalization; CSRF `Origin` checks; proxy-trusted IP rate limits (`120 req/60s`); 5 MB EXIF-stripped uploads; CSP/HSTS/COOP/`nosniff` headers. | Verified in `backend/tests/test_safety.py`, `test_request_guards.py`, `test_api.py`, `bandit`, `pip-audit`, `npm audit --omit=dev`, [`scripts/smoke.py`](scripts/smoke.py), and [`SECURITY.md`](SECURITY.md). |
+| **Efficiency** | Bounded `900s` / `256`-entry LRU Open-Meteo cache; concurrent async AQ+weather fetches; `8.0s` LLM `asyncio.wait_for` cap with pooled clients; `429`/`404` cooldown caches; client `AbortController` + lazy Recharts (`86.28 kB` gzip initial JS). | Verified in `backend/tests/test_data_fetcher.py`, `test_explainer.py`, [`frontend/vite.config.js`](frontend/vite.config.js), and [`scripts/check-bundle.mjs`](scripts/check-bundle.mjs). |
+| **Testing** | **62** backend pytest tests across 7 suites (`test_api`, `test_data_fetcher`, `test_engine`, `test_explainer`, `test_properties`, `test_request_guards`, `test_safety` — including Hypothesis invariants & >=90% source-only line+branch coverage gate), **6** smoke checks, and **36** Vitest + RTL tests across 14 suites. | Runnable directly via `pytest --cov`, `python scripts/smoke.py`, and `npm --prefix frontend run test:coverage`. |
 | **Accessibility** | `eslint-plugin-jsx-a11y` flat audit; WAI-ARIA `tablist` arrow/Home/End keyboard switching; focus-preserving accessible modals; `role="alert"` / `aria-live="polite"` triage & hourly announcements; Web Speech TTS/STT & responsive layouts. | Verified in `frontend/src/__tests__/a11yAndModal.test.jsx`, `EmergencyBanner.test.jsx`, and `npm --prefix frontend run lint`. |
-| **Problem Alignment** | Solves **Challenge 06 (Urban Air Quality Assistant)** for Indian households: Pan-India locations, CPCB NAQI + PBLH curves, constraint-aware schedules, Rs 0–500 room photo fixes, equity mode for outdoor workers, and 8-language support. | Cross-referenced across [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) and [`docs/BUILD_IN_PUBLIC.md`](docs/BUILD_IN_PUBLIC.md). |
+| **Problem Alignment** | Solves **Challenge 06 (Urban Air Quality Assistant)** for Indian households: Pan-India locations, CPCB NAQI + PBLH curves, constraint-aware schedules, Rs 0–500 room photo fixes, RWA/society scaling + `.ics` calendar export, equity mode, and 8-language support. | Cross-referenced across [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) and [`docs/BUILD_IN_PUBLIC.md`](docs/BUILD_IN_PUBLIC.md). |
 
 ---
 

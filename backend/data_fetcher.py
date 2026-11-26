@@ -27,6 +27,8 @@ from geo_india import (
 __all__ = [
     "CONSTANTS",
     "FALLBACK_REPLAY",
+    "INDIA_LAT_BOUNDS",
+    "INDIA_LON_BOUNDS",
     "IST_TZ",
     "PRESETS",
     "build_meteorology_note",
@@ -38,12 +40,16 @@ __all__ = [
     "nearest_featured_city",
     "reverse_geocode_india",
     "suggest_language_for_state",
+    "validate_india_coordinates",
+    "weather_cache_key",
 ]
 
 logger = logging.getLogger("prana_ai.data_fetcher")
 
 CACHE_TTL_SECONDS = 900  # 15 minutes
 CACHE_MAX_ENTRIES = 256
+INDIA_LAT_BOUNDS = (6.0, 37.5)
+INDIA_LON_BOUNDS = (68.0, 97.5)
 
 OPEN_METEO_AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 OPEN_METEO_WX_URL = "https://api.open-meteo.com/v1/forecast"
@@ -67,11 +73,53 @@ _LIVE_WX_SERIES: tuple[str, ...] = (
 )
 _MULTIDAY_SERIES: tuple[str, ...] = ("pm2_5", "pm10", "nitrogen_dioxide")
 _TTL_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_GEOCODE_CACHE: OrderedDict[str, tuple[float, list[dict[str, Any]]]] = OrderedDict()
+_REVERSE_GEO_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 
 
 def clear_cache() -> None:
-    """Clear the in-memory Open-Meteo TTL cache (useful in tests)."""
+    """Clear in-memory Open-Meteo, geocode, and reverse-geocode caches."""
     _TTL_CACHE.clear()
+    _GEOCODE_CACHE.clear()
+    _REVERSE_GEO_CACHE.clear()
+
+
+def validate_india_coordinates(lat: float, lon: float) -> tuple[float, float]:
+    """Validate that coordinates lie within Indian geographic bounds."""
+    lat_f, lon_f = float(lat), float(lon)
+    lat_min, lat_max = INDIA_LAT_BOUNDS
+    lon_min, lon_max = INDIA_LON_BOUNDS
+    if not (lat_min <= lat_f <= lat_max and lon_min <= lon_f <= lon_max):
+        raise ValueError(
+            f"Coordinates ({lat_f:.2f}, {lon_f:.2f}) fall outside supported India bounds."
+        )
+    return lat_f, lon_f
+
+
+def weather_cache_key(lat: float, lon: float) -> str:
+    """Return a ~0.25-degree spatial grid cache key aligned with ~40 km CAMS resolution."""
+    return f"{round(float(lat) * 4.0) / 4.0:.2f}:{round(float(lon) * 4.0) / 4.0:.2f}"
+
+
+def _get_aux_cached(cache: OrderedDict[str, tuple[float, Any]], key: str) -> Any | None:
+    """Return a fresh cached geocode/reverse-geocode entry, or None when absent/expired."""
+    entry = cache.get(key)
+    if not entry:
+        return None
+    ts, val = entry
+    if (time.monotonic() - ts) >= CACHE_TTL_SECONDS:
+        cache.pop(key, None)
+        return None
+    cache.move_to_end(key)
+    return val
+
+
+def _store_aux_cached(cache: OrderedDict[str, tuple[float, Any]], key: str, value: Any) -> None:
+    """Store a bounded geocode/reverse-geocode response in an LRU TTL cache."""
+    cache[key] = (time.monotonic(), value)
+    cache.move_to_end(key)
+    while len(cache) > CACHE_MAX_ENTRIES:
+        cache.popitem(last=False)
 
 
 def _current_ist_date() -> str:
@@ -165,14 +213,19 @@ def _sanitize_multiday_series(
     fallback_day: list[float],
     days: int = 5,
     as_int: bool = False,
+    day0_series: list[Any] | None = None,
 ) -> tuple[list[Any], int]:
     """Sanitize a 5x24h series, counting unique future-day (idx >= 24) fallback substitutions."""
     total = days * 24
     if not values or len(values) < 24:
+        day0 = day0_series if day0_series and len(day0_series) == 24 else fallback_day
         out = [
-            _format_series_value(float(v) * (1.0 if d == 0 else (0.94 + (d % 3) * 0.05)), as_int)
+            _format_series_value(
+                float(v) * (1.0 if d == 0 else (0.94 + (d % 3) * 0.05)),
+                as_int,
+            )
             for d in range(days)
-            for v in fallback_day
+            for v in (day0 if d == 0 else fallback_day)
         ]
         return out, max(0, total - 24)
 
@@ -195,10 +248,13 @@ async def geocode_india(
     count: int = 5,
     http_client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """Search any Indian city, town, or district via Open-Meteo Geocoding API with fallback."""
+    """Search Indian places via cached Open-Meteo Geocoding API with local fallback."""
     q = query.strip()
     if len(q) < 2:
         return []
+    cache_key = f"{q.lower()}:{count}"
+    if (cached := _get_aux_cached(_GEOCODE_CACHE, cache_key)) is not None:
+        return [dict(row) for row in cached]
 
     params = {"name": q, "count": count, "countryCode": "IN", "format": "json"}
     try:
@@ -221,6 +277,7 @@ async def geocode_india(
             for item in data.get("results") or []
         ]
         if formatted:
+            _store_aux_cached(_GEOCODE_CACHE, cache_key, formatted)
             return formatted
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning(
@@ -283,20 +340,27 @@ async def reverse_geocode_india(
     lon: float,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Resolve GPS coordinates to a readable Area, City in India via BigDataCloud."""
-    nearest_key = nearest_featured_city(lat, lon)
+    """Resolve Indian GPS coordinates to a cached readable Area, City via BigDataCloud."""
+    lat_f, lon_f = validate_india_coordinates(lat, lon)
+    cache_key = f"{round(lat_f * 50.0) / 50.0:.2f}:{round(lon_f * 50.0) / 50.0:.2f}"
+    if (cached := _get_aux_cached(_REVERSE_GEO_CACHE, cache_key)) is not None:
+        return {**cached, "lat": round(lat_f, 4), "lon": round(lon_f, 4)}
+
+    nearest_key = nearest_featured_city(lat_f, lon_f)
     nearest_meta = CONSTANTS["cities"][nearest_key]
     try:
-        params = {"latitude": lat, "longitude": lon, "localityLanguage": "en"}
+        params = {"latitude": lat_f, "longitude": lon_f, "localityLanguage": "en"}
         data = await _fetch_json(BIGDATACLOUD_REVERSE_URL, params, http_client=http_client)
-        return _parse_reverse_geocode_payload(data, lat, lon, str(nearest_meta["name"]))
+        parsed = _parse_reverse_geocode_payload(data, lat_f, lon_f, str(nearest_meta["name"]))
+        _store_aux_cached(_REVERSE_GEO_CACHE, cache_key, parsed)
+        return parsed
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning(
             "Reverse geocoding failed (%s); falling back near %s.",
             type(exc).__name__,
             nearest_meta["name"],
         )
-        return _reverse_geocode_fallback(lat, lon, nearest_key)
+        return _reverse_geocode_fallback(lat_f, lon_f, nearest_key)
 
 
 def _build_replay_series(
@@ -342,22 +406,16 @@ def _build_replay_provenance(
     }
 
 
-def build_replay_payload(
-    fallback_city_key: str,
-    reason: str,
-    **meta: Any,
-) -> dict[str, Any]:
-    """Build a clearly labeled historical replay dataset for offline/stale degradation."""
-    replay_city = FALLBACK_REPLAY["cities"][fallback_city_key]
-    replay_date = FALLBACK_REPLAY["replay_date"]
+def _resolve_replay_metadata(
+    fallback_city_key: str, meta: dict[str, Any]
+) -> tuple[dict[str, Any], float, float, bool, str]:
+    """Extract normalized location coordinates, coastal flag, and label for replay synthesis."""
     feat_meta = CONSTANTS["cities"][fallback_city_key]
-
     resolved_city_key = meta.get("city_key") or fallback_city_key
     resolved_display = meta.get("city_display") or feat_meta["name"]
     area_name, state = meta.get("area_name"), meta.get("state")
     use_lat = float(meta["lat"]) if meta.get("lat") is not None else float(feat_meta["lat"])
     use_lon = float(meta["lon"]) if meta.get("lon") is not None else float(feat_meta["lon"])
-
     known_key = resolved_city_key if resolved_city_key in CONSTANTS["cities"] else None
     coastal = is_coastal_location(use_lat, use_lon, state=state, city_key=known_key)
     loc_label = (
@@ -365,20 +423,46 @@ def build_replay_payload(
         if area_name and area_name != resolved_display
         else resolved_display
     )
-    hourly_raw, multiday_raw = _build_replay_series(replay_city, replay_date)
+    return (
+        {
+            "city": resolved_city_key,
+            "city_display": resolved_display,
+            "area_name": area_name,
+            "state": state,
+            "known_key": known_key,
+            "feat_name": feat_meta["name"],
+        },
+        round(use_lat, 4),
+        round(use_lon, 4),
+        coastal,
+        loc_label,
+    )
+
+
+def build_replay_payload(
+    fallback_city_key: str,
+    reason: str,
+    **meta: Any,
+) -> dict[str, Any]:
+    """Build a clearly labeled historical replay dataset for offline/stale degradation."""
+    replay_date = FALLBACK_REPLAY["replay_date"]
+    info, use_lat, use_lon, coastal, loc_label = _resolve_replay_metadata(fallback_city_key, meta)
+    hourly_raw, multiday_raw = _build_replay_series(
+        FALLBACK_REPLAY["cities"][fallback_city_key], replay_date
+    )
     return {
-        "city": resolved_city_key,
-        "city_display": resolved_display,
-        "area_name": area_name,
-        "state": state,
-        "lat": round(use_lat, 4),
-        "lon": round(use_lon, 4),
+        "city": info["city"],
+        "city_display": info["city_display"],
+        "area_name": info["area_name"],
+        "state": info["state"],
+        "lat": use_lat,
+        "lon": use_lon,
         "is_coastal": coastal,
-        "suggested_language": suggest_language_for_state(state, known_key),
-        "meteorology_note": build_meteorology_note(use_lat, coastal, city_key=known_key),
+        "suggested_language": suggest_language_for_state(info["state"], info["known_key"]),
+        "meteorology_note": build_meteorology_note(use_lat, coastal, city_key=info["known_key"]),
         "hourly_raw": hourly_raw,
         "multiday_raw": multiday_raw,
-        "provenance": _build_replay_provenance(replay_date, feat_meta["name"], loc_label, reason),
+        "provenance": _build_replay_provenance(replay_date, info["feat_name"], loc_label, reason),
     }
 
 
@@ -388,8 +472,10 @@ def _resolve_featured_city_loc(
     """Resolve coordinates and default sub-area label for a featured Indian city."""
     lat, lon = coords
     meta = CONSTANTS["cities"][city_key]
-    use_lat = float(lat) if lat is not None else float(meta["lat"])
-    use_lon = float(lon) if lon is not None else float(meta["lon"])
+    if lat is not None and lon is not None:
+        use_lat, use_lon = validate_india_coordinates(lat, lon)
+    else:
+        use_lat, use_lon = float(meta["lat"]), float(meta["lon"])
     resolved_area = area_name or (
         f"GPS ({use_lat:.3f}, {use_lon:.3f})" if lat is not None and lon is not None else None
     )
@@ -406,7 +492,8 @@ async def _resolve_custom_city_loc(
     lat, lon = coords
     area_name, state = hints
     if lat is not None and lon is not None:
-        return float(lat), float(lon), area_name or city_clean.title(), state, area_name
+        use_lat, use_lon = validate_india_coordinates(lat, lon)
+        return use_lat, use_lon, area_name or city_clean.title(), state, area_name
 
     geo = await geocode_india(city_clean, count=1, http_client=http_client)
     if not geo:
@@ -467,31 +554,37 @@ def _normalize_multiday_times(times: list[str]) -> list[str]:
 
 def _collect_sanitized_series(
     aq_json: dict[str, Any], wx_json: dict[str, Any], replay_city: dict[str, Any]
-) -> tuple[dict[str, list[Any]], dict[str, list[Any]], int]:
-    """Sanitize 24h AQ/weather arrays and 120h multiday AQ arrays while counting fallback slots."""
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]], int, int]:
+    """Sanitize 24h AQ/weather arrays and 120h multiday AQ arrays with separate counts."""
     hourly_out: dict[str, list[Any]] = {}
     multi_out: dict[str, list[Any]] = {}
-    fallback_slots = 0
+    hourly_slots = 0
+    multiday_slots = 0
 
     for key, as_int in _LIVE_AQ_SERIES:
         series, count = _sanitize_series(aq_json.get(key), replay_city[key], as_int=as_int)
         hourly_out[key] = series
-        fallback_slots += count
+        hourly_slots += count
     for key in _LIVE_WX_SERIES:
         series, count = _sanitize_series(wx_json.get(key), replay_city[key])
         hourly_out[key] = series
-        fallback_slots += count
+        hourly_slots += count
     for key in _MULTIDAY_SERIES:
-        series, count = _sanitize_multiday_series(aq_json.get(key), replay_city[key])
+        series, count = _sanitize_multiday_series(
+            aq_json.get(key), replay_city[key], day0_series=hourly_out.get(key)
+        )
         multi_out[key] = series
-        fallback_slots += count
+        multiday_slots += count
 
-    return hourly_out, multi_out, fallback_slots
+    return hourly_out, multi_out, hourly_slots, multiday_slots
 
 
-def _build_live_provenance(loc: dict[str, Any], fallback_slots: int) -> dict[str, Any]:
-    """Assemble provenance dictionary for live or partially-interpolated Open-Meteo payloads."""
-    is_partial = fallback_slots > 0
+def _build_live_provenance(
+    loc: dict[str, Any], hourly_slots: int, multiday_slots: int = 0
+) -> dict[str, Any]:
+    """Assemble provenance dictionary with separate hourly vs 5-day fallback accounting."""
+    total_slots = hourly_slots + multiday_slots
+    is_partial = total_slots > 0
     loc_parts = [p for p in (loc["area_name"], loc["city_display"], loc["state"]) if p]
     loc_desc = ", ".join(dict.fromkeys(loc_parts))
     base_note = (
@@ -502,7 +595,8 @@ def _build_live_provenance(loc: dict[str, Any], fallback_slots: int) -> dict[str
         source_lbl = "Open-Meteo (CAMS Global + NWP, partial fallback)"
         data_type = "partial_model_forecast"
         spatial_note = (
-            f"{base_note} Note: {fallback_slots} missing upstream slots used fallback fill."
+            f"{base_note} Note: {hourly_slots} current-day and {multiday_slots} multi-day "
+            "outlook slots used fallback fill."
         )
     else:
         source_lbl = "Open-Meteo (CAMS Global ~40 km + Weather Forecast)"
@@ -515,7 +609,10 @@ def _build_live_provenance(loc: dict[str, Any], fallback_slots: int) -> dict[str
         "is_stale": False,
         "is_fallback_replay": False,
         "is_partial_fallback": is_partial,
-        "fallback_slots": fallback_slots,
+        "fallback_slots": total_slots,
+        "hourly_fallback_slots": hourly_slots,
+        "multiday_fallback_slots": multiday_slots,
+        "is_multiday_fallback": multiday_slots > 0,
         "spatial_resolution": SPATIAL_RES_LIVE,
         "spatial_note": spatial_note,
     }
@@ -535,7 +632,7 @@ def _assemble_live_payload(
         raise ValueError("Mismatched Open-Meteo air-quality and weather timestamps")
 
     replay_city = FALLBACK_REPLAY["cities"][loc["fallback_key"]]
-    hourly_series, multi_series, fallback_slots = _collect_sanitized_series(
+    hourly_series, multi_series, hourly_slots, multiday_slots = _collect_sanitized_series(
         aq_json, wx_json, replay_city
     )
     return {
@@ -550,7 +647,7 @@ def _assemble_live_payload(
         "meteorology_note": loc["meteorology_note"],
         "hourly_raw": {"time": aq_times[:24], **hourly_series},
         "multiday_raw": {"time": _normalize_multiday_times(aq_times), **multi_series},
-        "provenance": _build_live_provenance(loc, fallback_slots),
+        "provenance": _build_live_provenance(loc, hourly_slots, multiday_slots),
     }
 
 
@@ -558,7 +655,14 @@ def _apply_loc_metadata(payload: dict[str, Any], loc: dict[str, Any]) -> dict[st
     """Attach caller location metadata and caller-specific provenance note onto cache copy."""
     copy_payload = dict(payload)
     orig_prov = dict(payload.get("provenance") or {})
-    rebuilt_prov = _build_live_provenance(loc, int(orig_prov.get("fallback_slots", 0)))
+    raw_hourly = orig_prov.get("hourly_fallback_slots")
+    if raw_hourly is None:
+        raw_hourly = orig_prov.get("fallback_slots")
+    rebuilt_prov = _build_live_provenance(
+        loc,
+        int(raw_hourly) if raw_hourly is not None else 0,
+        int(orig_prov.get("multiday_fallback_slots") or 0),
+    )
     rebuilt_prov["retrieved_at"] = orig_prov.get("retrieved_at", rebuilt_prov["retrieved_at"])
     rebuilt_prov["is_stale"] = bool(orig_prov.get("is_stale", False))
     rebuilt_prov["is_fallback_replay"] = bool(orig_prov.get("is_fallback_replay", False))
@@ -674,7 +778,7 @@ async def fetch_city_atmospheric_data(  # pylint: disable=too-many-arguments,too
             state=loc["state"],
         )
 
-    cache_key = f"{loc['lat']:.3f}:{loc['lon']:.3f}"
+    cache_key = weather_cache_key(loc["lat"], loc["lon"])
     is_fresh, cached_entry = _get_cached_entry(cache_key)
     if is_fresh and cached_entry:
         return _apply_loc_metadata(cached_entry, loc)

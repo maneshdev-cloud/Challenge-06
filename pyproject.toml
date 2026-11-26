@@ -9,6 +9,11 @@ pythonpath = ["backend"]
 testpaths = ["backend/tests"]
 addopts = "-ra --strict-markers"
 
+[tool.coverage.run]
+source = ["backend"]
+branch = true
+omit = ["backend/tests/*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from starlette.types import Message
 
 import explainer
 import gemini_client
@@ -510,6 +512,8 @@ def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
     import time
     from collections import deque
 
+    from request_guards import DEFAULT_RATE_LIMITER, NON_LLM_RATE_LIMITER
+
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
     delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
     plan_res = client.post(
@@ -519,8 +523,11 @@ def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
     sig = plan_res["evidence_signature"]
     test_ip = "203.0.113.99"
 
-    main_mod._RATE_BUCKETS.clear()
-    main_mod._RATE_BUCKETS[test_ip] = deque([time.monotonic()] * main_mod.RATE_LIMIT_MAX_REQUESTS)
+    DEFAULT_RATE_LIMITER.clear()
+    NON_LLM_RATE_LIMITER.clear()
+    DEFAULT_RATE_LIMITER.buckets[test_ip] = deque(
+        [time.monotonic()] * DEFAULT_RATE_LIMITER.max_requests
+    )
     try:
         blocked = client.post(
             "/v1/chat",
@@ -533,6 +540,19 @@ def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
             },
         )
         assert blocked.status_code == 429
+
+        # Invalid-signature request must NOT bypass rate limiter even with ER keywords
+        forged_er = client.post(
+            "/v1/chat",
+            headers={"x-forwarded-for": test_ip},
+            json={
+                "message": "My son is wheezing",
+                "evidence_bundle": bundle,
+                "evidence_signature": "0" * 64,
+                "language": "en",
+            },
+        )
+        assert forged_er.status_code == 429
 
         er_ok = client.post(
             "/v1/chat",
@@ -549,7 +569,8 @@ def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
         assert er_ok.json()["source"] == "emergency_triage"
         assert "108" in er_ok.json()["reply"]
     finally:
-        main_mod._RATE_BUCKETS.clear()
+        DEFAULT_RATE_LIMITER.clear()
+        NON_LLM_RATE_LIMITER.clear()
 
 
 def test_audit_room_strips_exif_and_rejects_oversized_pixel_bomb(monkeypatch) -> None:
@@ -616,3 +637,167 @@ def test_audit_room_strips_exif_and_rejects_oversized_pixel_bomb(monkeypatch) ->
         data={"city": "Delhi"},
     )
     assert huge_len.status_code == 413
+
+
+def test_audit_room_applies_exif_orientation_and_blocks_chunked_overflow(monkeypatch) -> None:
+    """Verify EXIF Orientation=6 rotates pixels before stripping and chunked >5MB stops early."""
+    exif = Image.Exif()
+    exif[274] = 6  # Rotate 270 CW / 90 CW portrait -> 40x20 becomes 20x40
+    oriented_buf = io.BytesIO()
+    Image.new("RGB", (40, 20), color=(30, 90, 150)).save(
+        oriented_buf, format="JPEG", exif=exif.tobytes()
+    )
+
+    seen_sizes: list[tuple[int, int]] = []
+    seen_exif_counts: list[int] = []
+
+    def capture_rotated(
+        _prompt: str, image_bytes: bytes, mime_type: str, _model: str, _key: str
+    ) -> str:
+        assert mime_type == "image/jpeg"
+        with Image.open(io.BytesIO(image_bytes)) as clean_img:
+            seen_sizes.append(clean_img.size)
+            seen_exif_counts.append(len(clean_img.getexif()))
+        return (
+            '{"room_summary": "Portrait seal check.", "tips": ['
+            '{"title": "Vent", "cost_inr": "Rs. 0", '
+            '"action": "Keep trickle vent.", "why_it_helps": "Reduces PM."}]}'
+        )
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-exif-rot-key")
+    monkeypatch.setattr(explainer, "_call_gemini_vision_sync", capture_rotated)
+    rot_resp = client.post(
+        "/v1/audit-room",
+        data={"city": "Delhi", "language": "en"},
+        files={"file": ("sideways.jpg", oriented_buf.getvalue(), "image/jpeg")},
+    )
+    assert rot_resp.status_code == 200
+    assert seen_sizes == [(20, 40)]
+    assert seen_exif_counts == [0]
+
+    # Chunked ASGI upload without Content-Length must halt cleanly before reading all 7 chunks
+    chunk = b"x" * (1024 * 1024)
+    chunks_delivered = 0
+    sent_messages: list[Message] = []
+
+    async def fake_receive() -> Message:
+        nonlocal chunks_delivered
+        chunks_delivered += 1
+        return {"type": "http.request", "body": chunk, "more_body": chunks_delivered < 7}
+
+    async def fake_send(msg: Message) -> None:
+        sent_messages.append(msg)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audit-room",
+        "raw_path": b"/v1/audit-room",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"multipart/form-data; boundary=x"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, fake_receive, fake_send))
+    assert sent_messages[0]["status"] == 413
+    assert chunks_delivered < 7
+
+
+def test_non_india_coords_naqi_bounds_rate_limits_and_prebuffer_origin() -> None:
+    """Verify India bbox rejection, bounded audit current_naqi, rate limits, and 403 prebuffer."""
+    import time
+    from collections import deque
+
+    from request_guards import DEFAULT_RATE_LIMITER, NON_LLM_RATE_LIMITER
+
+    # Out-of-India and partial coordinates rejected on /v1/air, /v1/plan, and /v1/reverse-geocode
+    sydney = client.get("/v1/air", params={"lat": -33.86, "lon": 151.20})
+    assert sydney.status_code == 422
+    partial_air = client.get("/v1/air", params={"city": "delhi", "lat": 28.61})
+    assert partial_air.status_code == 422
+    partial_plan = client.post("/v1/plan", json={"city": "delhi", "lon": 77.21})
+    assert partial_plan.status_code == 422
+    zero_coord = client.get("/v1/reverse-geocode", params={"lat": 0.0, "lon": 0.0})
+    assert zero_coord.status_code == 422
+
+    # Unbounded EvidenceBundle list length rejected cleanly on /v1/chat
+    delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
+    plan_res = client.post(
+        "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
+    ).json()
+    oversized_bundle = dict(plan_res["evidence_bundle"])
+    oversized_bundle["grounded_numbers"] = [float(i) for i in range(513)]
+    too_many_nums = client.post(
+        "/v1/chat",
+        json={
+            "message": "Hello",
+            "evidence_bundle": oversized_bundle,
+            "evidence_signature": "0" * 64,
+            "language": "en",
+        },
+    )
+    assert too_many_nums.status_code == 422
+
+    # Unbounded current_naqi on /v1/audit-room rejected with 422
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), color=(100, 140, 180)).save(buf, format="PNG")
+    bad_naqi = client.post(
+        "/v1/audit-room",
+        data={"city": "Delhi", "current_naqi": "99999"},
+        files={"file": ("room.png", buf.getvalue(), "image/png")},
+    )
+    assert bad_naqi.status_code == 422
+
+    # Cross-origin upload rejected BEFORE reading body chunks
+    chunks_seen = 0
+    messages_out: list[Message] = []
+
+    async def counting_receive() -> Message:
+        nonlocal chunks_seen
+        chunks_seen += 1
+        return {"type": "http.request", "body": b"x" * 1024, "more_body": False}
+
+    async def collect_send(msg: Message) -> None:
+        messages_out.append(msg)
+
+    evil_scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audit-room",
+        "raw_path": b"/v1/audit-room",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"prana-ai.vercel.app"),
+            (b"origin", b"https://evil.example"),
+            (b"content-type", b"multipart/form-data; boundary=x"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("prana-ai.vercel.app", 443),
+    }
+    asyncio.run(app(evil_scope, counting_receive, collect_send))
+    assert messages_out[0]["status"] == 403
+    assert chunks_seen == 0
+
+    # Non-LLM endpoints (/v1/plan skip_llm=True, /v1/air, /v1/geocode) enforce NON_LLM_RATE_LIMITER
+    NON_LLM_RATE_LIMITER.buckets["testclient"] = deque(
+        [time.monotonic()] * NON_LLM_RATE_LIMITER.max_requests
+    )
+    try:
+        throttled_plan = client.post(
+            "/v1/plan", json={"city": "delhi", "simulate_stale": True, "skip_llm": True}
+        )
+        assert throttled_plan.status_code == 429
+        throttled_air = client.get("/v1/air", params={"city": "delhi", "simulate_stale": True})
+        assert throttled_air.status_code == 429
+    finally:
+        DEFAULT_RATE_LIMITER.clear()
+        NON_LLM_RATE_LIMITER.clear()

@@ -10,7 +10,7 @@ const PRECACHE_URLS = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(PRECACHE_URLS)).catch(() => {})
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(PRECACHE_URLS)).catch(() => { })
   );
   self.skipWaiting();
 });
@@ -43,8 +43,10 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(request)
         .then((resp) => {
-          const clone = resp.clone();
-          caches.open(CACHE_VERSION).then((c) => c.put("/", clone)).catch(() => {});
+          if (resp && resp.ok) {
+            const clone = resp.clone();
+            caches.open(CACHE_VERSION).then((c) => c.put("/", clone)).catch(() => {});
+          }
           return resp;
         })
         .catch(() => caches.match("/index.html").then((cached) => cached || caches.match("/")))

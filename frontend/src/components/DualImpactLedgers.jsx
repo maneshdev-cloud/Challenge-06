@@ -104,7 +104,7 @@ export default function DualImpactLedgers({
             <Cigarette className="h-4 w-4 shrink-0 text-teal-700" aria-hidden="true" />
             <span className="font-semibold">
               <span className="font-mono font-bold">{breatheLess.cigarettes_avoided}</span>{" "}
-              cigarette equivalents avoided today (330 ug/cig)
+              cigarette equivalents avoided today (330 ug/cig, adult-reference V<sub>E</sub> proxy)
               {lowSmogCigs ? " • Low-smog day" : ""}
             </span>
           </div>

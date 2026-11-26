@@ -139,6 +139,53 @@ def test_multiday_fallback_slots_not_double_counted() -> None:
     prov = payload["provenance"]
     assert prov["is_partial_fallback"] is True
     assert prov["fallback_slots"] == 1
+    assert prov["hourly_fallback_slots"] == 0
+    assert prov["multiday_fallback_slots"] == 1
+    assert prov["is_multiday_fallback"] is True
+
+    # Missing multiday array while 24h hourly series is live must flag multiday fallback cleanly
+    clear_cache()
+
+    def _no_multiday_handler(request: httpx.Request) -> httpx.Response:
+        times = [f"2026-11-26T{h:02d}:00" for h in range(24)]
+        if "air-quality" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "hourly": {
+                        "time": times,
+                        "pm2_5": [55.0] * 24,
+                        "pm10": [85.0] * 24,
+                        "nitrogen_dioxide": [30.0] * 24,
+                        "us_aqi": [110] * 24,
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": times,
+                    "temperature_2m": [22.0] * 24,
+                    "relative_humidity_2m": [55.0] * 24,
+                    "wind_speed_10m": [6.0] * 24,
+                    "boundary_layer_height": [450.0] * 24,
+                }
+            },
+            request=request,
+        )
+
+    async def _run_no_multi() -> dict:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_no_multiday_handler)) as client:
+            return await fetch_city_atmospheric_data("delhi", http_client=client)
+
+    no_multi_payload = asyncio.run(_run_no_multi())
+    nm_prov = no_multi_payload["provenance"]
+    assert nm_prov["hourly_fallback_slots"] == 0
+    assert nm_prov["multiday_fallback_slots"] == 288
+    assert nm_prov["is_multiday_fallback"] is True
+    assert nm_prov["is_partial_fallback"] is True
 
 
 def test_partial_fallback_disclosure_required_and_templated() -> None:
@@ -262,7 +309,7 @@ def test_upstream_failure_cancels_sibling_and_rereads_fresh_cache() -> None:
     """Failing AQ request cancels pending weather task and re-reads fresh concurrent cache."""
     from datetime import datetime
 
-    from data_fetcher import CONSTANTS, IST_TZ, _prune_and_store_cache
+    from data_fetcher import CONSTANTS, IST_TZ, _prune_and_store_cache, weather_cache_key
 
     clear_cache()
     today = datetime.now(IST_TZ).strftime("%Y-%m-%d")
@@ -274,7 +321,7 @@ def test_upstream_failure_cancels_sibling_and_rereads_fresh_cache() -> None:
             lat = float(CONSTANTS["cities"]["delhi"]["lat"])
             lon = float(CONSTANTS["cities"]["delhi"]["lon"])
             _prune_and_store_cache(
-                f"{lat:.3f}:{lon:.3f}",
+                weather_cache_key(lat, lon),
                 {
                     "city": "delhi",
                     "city_display": "Delhi",
@@ -300,3 +347,82 @@ def test_upstream_failure_cancels_sibling_and_rereads_fresh_cache() -> None:
     assert wx_cancelled["flag"] is True
     assert payload["provenance"]["is_stale"] is True
     assert payload["provenance"]["is_fallback_replay"] is False
+
+
+def test_coarse_weather_cache_geocode_caches_and_india_bounds() -> None:
+    """Verify 0.25-deg AQ/WX cache reuse, cached geocode/reverse-geocode, and India bbox."""
+    import pytest
+
+    from data_fetcher import geocode_india, validate_india_coordinates
+
+    clear_cache()
+    calls = {"aq_wx": 0, "geo": 0, "rev": 0}
+    times = [f"2026-11-26T{h:02d}:00" for h in range(24)]
+
+    def _counting_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "geocoding-api" in url:
+            calls["geo"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "name": "Pune",
+                            "admin1": "Maharashtra",
+                            "admin2": "Pune",
+                            "latitude": 18.5204,
+                            "longitude": 73.8567,
+                        }
+                    ]
+                },
+                request=request,
+            )
+        if "bigdatacloud" in url:
+            calls["rev"] += 1
+            return httpx.Response(
+                200,
+                json={"city": "Pune", "locality": "Kothrud", "principalSubdivision": "Maharashtra"},
+                request=request,
+            )
+        calls["aq_wx"] += 1
+        return httpx.Response(
+            200,
+            json={
+                "hourly": {
+                    "time": times,
+                    "pm2_5": [55.0] * 24,
+                    "pm10": [85.0] * 24,
+                    "nitrogen_dioxide": [30.0] * 24,
+                    "us_aqi": [110] * 24,
+                    "temperature_2m": [24.0] * 24,
+                    "relative_humidity_2m": [55.0] * 24,
+                    "wind_speed_10m": [8.0] * 24,
+                    "boundary_layer_height": [450.0] * 24,
+                }
+            },
+            request=request,
+        )
+
+    async def _exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(_counting_handler)) as client:
+            await fetch_city_atmospheric_data(
+                "custom", lat=28.613, lon=77.209, area_name="CP", http_client=client
+            )
+            await fetch_city_atmospheric_data(
+                "custom", lat=28.614, lon=77.210, area_name="Janpath", http_client=client
+            )
+            await geocode_india("Pune", count=3, http_client=client)
+            await geocode_india("pune", count=3, http_client=client)
+            await reverse_geocode_india(18.5204, 73.8567, http_client=client)
+            await reverse_geocode_india(18.5210, 73.8570, http_client=client)
+
+    asyncio.run(_exercise())
+    assert calls["aq_wx"] == 2  # Exactly 1 AQ + 1 WX request across both nearby coords
+    assert calls["geo"] == 1
+    assert calls["rev"] == 1
+
+    with pytest.raises(ValueError, match="India bounds"):
+        validate_india_coordinates(-33.86, 151.20)
+    with pytest.raises(ValueError, match="India bounds"):
+        validate_india_coordinates(0.0, 0.0)

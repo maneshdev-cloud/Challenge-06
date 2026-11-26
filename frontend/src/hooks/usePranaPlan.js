@@ -4,7 +4,6 @@ import {
   CATEGORY_LABELS,
   CATEGORY_TEMPLATES,
   FALLBACK_CITIES,
-  LANGUAGES,
   PRESET_TO_CATEGORY
 } from "../data/constants";
 import {
@@ -87,10 +86,8 @@ export default function usePranaPlan() {
   );
 
   useEffect(() => {
-    const langCode = state.planConfig?.language || "en";
-    const meta = LANGUAGES.find((l) => l.key === langCode);
-    document.documentElement.lang = meta?.htmlLang || "en";
-  }, [state.planConfig?.language]);
+    document.documentElement.lang = "en";
+  }, []);
 
   useEffect(() => {
     return () => {

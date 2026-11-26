@@ -141,20 +141,24 @@ def build_profile_risk_summary(
     """Compute category-specific NAQI thresholds, lung intake, and risk copy from templates."""
     key = _resolve_profile_key(req)
     ve_map = CONSTANTS["usepa_ventilation_m3_hr"]
-    ve_values = [float(ve_map.get(a.activity_level, 1.25)) for a in req.activities] or [1.25]
-    peak_ve = round(max(ve_values), 2)
-    total_outdoor_min = sum(a.duration_min for a in req.activities)
+    peak_ve = round(
+        max([float(ve_map.get(a.activity_level, 1.25)) for a in req.activities] or [1.25]), 2
+    )
     threshold = int(ENGINE_PARAMS["category_warning_thresholds_naqi"][key])
     warning_active = snapshot.current_naqi > threshold
 
     tpl = CONSTANTS["profile_copy_templates"][key]
     band_idx = 0 if snapshot.current_naqi > 200 else (1 if warning_active else 2)
-    gw = snapshot.golden_window
     headline_key = (
-        "clean" if gw.is_clean_air_day else ("window" if gw.has_meaningful_window else "flat")
+        "clean"
+        if snapshot.golden_window.is_clean_air_day
+        else ("window" if snapshot.golden_window.has_meaningful_window else "flat")
     )
     ctx = _profile_copy_context(
-        snapshot, breathe_less, emit_less, (key, threshold, peak_ve, total_outdoor_min)
+        snapshot,
+        breathe_less,
+        emit_less,
+        (key, threshold, peak_ve, sum(a.duration_min for a in req.activities)),
     )
     return ProfileRiskSummary(
         profile_key=key,
@@ -166,7 +170,7 @@ def build_profile_risk_summary(
         risk_badge=str(tpl["badges"][band_idx]),
         warning_banner=str(tpl["banners"][("severe", "warning", "ok")[band_idx]]).format(**ctx),
         peak_ventilation_m3_hr=peak_ve,
-        total_outdoor_min=total_outdoor_min,
+        total_outdoor_min=sum(a.duration_min for a in req.activities),
         tailored_hero_headline=str(tpl["headlines"][headline_key]).format(**ctx),
         physiology_note=str(tpl["physiology"]).format(**ctx),
     )
@@ -337,6 +341,17 @@ def _build_breathe_less_ledger(
     )
 
 
+def _compute_routine_and_breathe_less(
+    req: PlanRequest, snapshot: AirSnapshotResponse, raw_payload: dict[str, Any]
+) -> tuple[list[RoutineItemResult], BreatheLessLedger]:
+    """Schedule household activities and build the USEPA Breathe Less dose ledger."""
+    next_day = extract_next_day_series(raw_payload)
+    routine_plan, base_dose, opt_dose, dose_subs = schedule_activities(
+        req, snapshot, next_day_pm25=next_day[0], next_day_naqi=next_day[1]
+    )
+    return routine_plan, _build_breathe_less_ledger(base_dose, opt_dose, dose_subs)
+
+
 def build_evidence_bundle(
     req: PlanRequest,
     raw_payload: dict[str, Any],
@@ -346,11 +361,7 @@ def build_evidence_bundle(
 ) -> EvidenceBundle:
     """Assemble the complete immutable deterministic EvidenceBundle for PRANA-AI."""
     snapshot = build_air_snapshot(raw_payload, current_hour=current_hour)
-    next_day_pm25, next_day_naqi = extract_next_day_series(raw_payload)
-    routine_plan, base_dose, opt_dose, dose_subs = schedule_activities(
-        req, snapshot, next_day_pm25=next_day_pm25, next_day_naqi=next_day_naqi
-    )
-    breathe_less = _build_breathe_less_ledger(base_dose, opt_dose, dose_subs)
+    routine_plan, breathe_less = _compute_routine_and_breathe_less(req, snapshot, raw_payload)
     sanctuary_plan = score_sanctuary(req, snapshot)
     emit_less = compute_emit_less(req)
     profile_summary = build_profile_risk_summary(req, snapshot, breathe_less, emit_less)

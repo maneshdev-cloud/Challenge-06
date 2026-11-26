@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from air_quality import classify_meteorology_regime
 from data_fetcher import PRESETS, build_replay_payload
 from engine import (
     build_air_snapshot,
@@ -585,3 +586,48 @@ def test_post_midnight_naqi_slider_indoor_isolation_and_window_cap() -> None:
     assert wa_cap.modeled_indoor_baseline_pm25 > 90.0
     assert wa_cap.action == "keep_shut_exhaust"
     assert "90" in wa_cap.guidance
+
+
+def test_user_category_mask_sensitivity_coastal_regime_and_co2_note() -> None:
+    """Verify user_category sensitivity with empty members, coastal wind labels, and CO2 note."""
+    raw = build_replay_payload("delhi", "test")
+    raw["hourly_raw"]["pm2_5"] = [50.0] * 24
+    raw["hourly_raw"]["wind_speed_10m"] = [12.0] * 24
+    raw["hourly_raw"]["boundary_layer_height"] = [450.0] * 24
+
+    act = ActivityItem(
+        id="bus_wait",
+        name="Morning Wait",
+        flexibility="fixed",
+        planned_hour=8,
+        duration_min=30,
+        activity_level="light_walk",
+    )
+    senior_req = PlanRequest(
+        city="delhi",
+        user_category="seniors",
+        budget_tier="under_500",
+        members=[],
+        activities=[act],
+    )
+    adult_req = PlanRequest(
+        city="delhi",
+        user_category="adults_commuters",
+        budget_tier="under_500",
+        members=[],
+        activities=[act],
+    )
+    senior_bundle = build_evidence_bundle(senior_req, raw, current_hour=7)
+    adult_bundle = build_evidence_bundle(adult_req, raw, current_hour=7)
+    assert senior_bundle.routine_plan[0].recommended_mask == "n95"
+    assert adult_bundle.routine_plan[0].recommended_mask == "none"
+
+    assert "no live indoor co2 sensor" in senior_bundle.sanctuary_plan.co2_safety_note.lower()
+    assert "ajar" in senior_bundle.sanctuary_plan.co2_safety_note.lower()
+
+    inland_snap = build_air_snapshot(raw, current_hour=12)
+    assert inland_snap.meteorology_regime == "Strong Daytime Wind Dispersion"
+
+    coastal_points = inland_snap.hourly
+    _, coastal_regime = classify_meteorology_regime(coastal_points, is_coastal=True)
+    assert coastal_regime == "Active Daytime / Sea-Breeze Dispersion"

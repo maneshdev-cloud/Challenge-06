@@ -269,10 +269,43 @@ def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatc
             super().__init__(msg)
             self.code = code
 
-    assert classify_gemini_error(_CodeErr(400, "quota message inside 400 error")) == "key_invalid"
+    assert classify_gemini_error(_CodeErr(400, "quota message inside 400 error")) == "other"
     assert classify_gemini_error(_CodeErr(401, "404 string noise")) == "key_invalid"
     assert classify_gemini_error(_CodeErr(502, "bad gateway")) == "503_unavailable"
     assert classify_gemini_error(TimeoutError("network")) == "504_timeout"
+
+    # A single 400 must not cool down the API key for valid follow-up requests
+    explainer.reset_failover_cache()
+    live_bundle = _sample_bundle(simulate_stale=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-400-resilient-key")
+    state = {"n": 0}
+
+    def _bad_then_good(*_args) -> str:
+        state["n"] += 1
+        if state["n"] == 1:
+            raise _CodeErr(400, "Bad request shape")
+        return (
+            f"Today's Air:\nPM2.5 is {live_bundle.air_snapshot.current_pm25} ug/m3 "
+            f"(NAQI {live_bundle.air_snapshot.current_naqi}).\n\n"
+            f"Do This:\n- Walk at {live_bundle.air_snapshot.golden_window.window_label}."
+        )
+
+    monkeypatch.setattr(explainer, "_call_gemini_sync", _bad_then_good)
+    txt400, src400, ok400 = asyncio.run(
+        explainer.generate_plan_narrative(live_bundle, skip_llm=False)
+    )
+    assert src400 == "gemini" and ok400 is True and "PM2.5" in txt400
+
+    # MAX_TOKENS candidate truncation triggers deterministic fallback cleanly
+    from gemini_client import _check_finish_reason
+
+    class _Cand:
+        finish_reason = "MAX_TOKENS"
+
+    class _Resp:
+        candidates = [_Cand()]
+
+    assert _check_finish_reason(_Resp(), "gemini-2.5-flash") is False
 
     # Empty LLM response on a stale bundle must fall back cleanly instead of bare disclosure note
     stale_bundle = _sample_bundle(simulate_stale=True)

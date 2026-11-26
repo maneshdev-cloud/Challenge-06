@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { Suspense, lazy, useRef, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 import { sendChatQuestion } from "./api/client";
 import AppInstallPermissionsModal from "./components/AppInstallPermissionsModal";
@@ -15,9 +15,10 @@ import IndoorSanctuaryCard from "./components/IndoorSanctuaryCard";
 import PersonaBar from "./components/PersonaBar";
 import RoutineTimeline from "./components/RoutineTimeline";
 import ShowMathModal from "./components/ShowMathModal";
-import SmogChartCard from "./components/SmogChartCard";
 import { TABS } from "./data/constants";
 import usePranaPlan from "./hooks/usePranaPlan";
+
+const SmogChartCard = lazy(() => import("./components/SmogChartCard"));
 
 export default function App() {
   const {
@@ -219,93 +220,104 @@ export default function App() {
                 </div>
               </div>
 
-              {activeTab === "plan" && (
-                <div
-                  id="panel-plan"
-                  role="tabpanel"
-                  aria-labelledby="tab-plan"
-                  className="space-y-5"
-                >
-                  {bundle.air_snapshot.current_naqi > 150 && (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-xs text-amber-950 ring-1 ring-amber-200">
-                      <div className="flex items-center gap-2.5">
-                        <FileText className="h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
-                        <span>
-                          <strong>Elevated Smog (Est. AQI {bundle.air_snapshot.current_naqi}):</strong> Generate a
-                          polite indoor-assembly or shift-timing note for school or work.
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setCleanAirNoteOpen(true)}
-                        className="rounded-full bg-amber-900 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600"
-                      >
-                        Generate School / Office Note
-                      </button>
+              <div
+                id="panel-plan"
+                role="tabpanel"
+                aria-labelledby="tab-plan"
+                hidden={activeTab !== "plan"}
+                className={activeTab === "plan" ? "space-y-5" : "hidden"}
+              >
+                {bundle.air_snapshot.current_naqi > 150 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-xs text-amber-950 ring-1 ring-amber-200">
+                    <div className="flex items-center gap-2.5">
+                      <FileText className="h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+                      <span>
+                        <strong>Elevated Smog (Est. AQI {bundle.air_snapshot.current_naqi}):</strong> Generate a
+                        polite indoor-assembly or shift-timing note for school or work.
+                      </span>
                     </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => setCleanAirNoteOpen(true)}
+                      className="rounded-full bg-amber-900 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600"
+                    >
+                      Generate School / Office Note
+                    </button>
+                  </div>
+                )}
+                <Suspense
+                  fallback={
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="h-72 animate-pulse rounded-3xl bg-white p-6 shadow-md ring-1 ring-slate-200/70"
+                    >
+                      <span className="sr-only">Loading 24-hour smog chart...</span>
+                    </div>
+                  }
+                >
                   <SmogChartCard
                     airSnapshot={bundle.air_snapshot}
                     profileSummary={bundle.profile_summary}
                   />
-                  <RoutineTimeline
-                    bundle={bundle}
-                    routinePlan={bundle.routine_plan}
-                    members={planConfig?.members || []}
-                    selectedMember={selectedMember}
-                    onSelectMember={setSelectedMember}
-                    narrative={planResult.narrative}
-                    narrativeSource={planResult.narrative_source}
-                    validatorPassed={planResult.validator_passed}
-                    explaining={explaining}
-                    onExplainWithGemini={() =>
-                      runPlan(planConfig, simulateStale, false, "Recalculating plan...")
-                    }
-                    onOpenCleanAirNote={() => setCleanAirNoteOpen(true)}
-                  />
-                  <FiveDayOutlookCard dailyOutlook={bundle.air_snapshot.daily_outlook} />
-                </div>
-              )}
+                </Suspense>
+                <RoutineTimeline
+                  bundle={bundle}
+                  routinePlan={bundle.routine_plan}
+                  members={planConfig?.members || []}
+                  selectedMember={selectedMember}
+                  onSelectMember={setSelectedMember}
+                  narrative={planResult.narrative}
+                  narrativeSource={planResult.narrative_source}
+                  validatorPassed={planResult.validator_passed}
+                  explaining={explaining}
+                  onExplainWithGemini={() =>
+                    runPlan(planConfig, simulateStale, false, "Recalculating plan...")
+                  }
+                  onOpenCleanAirNote={() => setCleanAirNoteOpen(true)}
+                />
+                <FiveDayOutlookCard dailyOutlook={bundle.air_snapshot.daily_outlook} />
+              </div>
 
-              {activeTab === "indoor" && (
-                <div
-                  id="panel-indoor"
-                  role="tabpanel"
-                  aria-labelledby="tab-indoor"
-                >
-                  <IndoorSanctuaryCard
-                    sanctuaryPlan={bundle.sanctuary_plan}
-                    currentNaqi={bundle.air_snapshot.current_naqi}
-                    currentCategory={bundle.air_snapshot.current_category}
-                    city={bundle.air_snapshot.city_name || planConfig?.city || "mumbai"}
-                    areaName={bundle.air_snapshot.area_name || planConfig?.area_name || null}
-                    language={planConfig?.language || "en"}
-                    onOpenPermissions={() => setInstallModalOpen(true)}
-                  />
-                </div>
-              )}
+              <div
+                id="panel-indoor"
+                role="tabpanel"
+                aria-labelledby="tab-indoor"
+                hidden={activeTab !== "indoor"}
+                className={activeTab === "indoor" ? "block" : "hidden"}
+              >
+                <IndoorSanctuaryCard
+                  sanctuaryPlan={bundle.sanctuary_plan}
+                  currentNaqi={bundle.air_snapshot.current_naqi}
+                  currentCategory={bundle.air_snapshot.current_category}
+                  city={bundle.air_snapshot.city_name || planConfig?.city || "mumbai"}
+                  areaName={bundle.air_snapshot.area_name || planConfig?.area_name || null}
+                  language={planConfig?.language || "en"}
+                  onOpenPermissions={() => setInstallModalOpen(true)}
+                />
+              </div>
 
-              {activeTab === "impact" && (
-                <div
-                  id="panel-impact"
-                  role="tabpanel"
-                  aria-labelledby="tab-impact"
-                >
-                  <DualImpactLedgers
-                    breatheLess={bundle.breathe_less}
-                    emitLess={bundle.emit_less}
-                    goldenStartHour={bundle.air_snapshot.golden_window.start_hour}
-                    walkOverrideHour={planConfig?.walk_override_hour ?? null}
-                    onWalkHourChange={handleWalkHourChange}
-                    onResetWalkHour={handleResetWalkHour}
-                    targetCommuteMode={planConfig?.target_commute_mode || "electric_metro"}
-                    onTargetCommuteChange={handleTargetCommuteChange}
-                    commuteKm={planConfig?.commute_km ?? 16}
-                    onCommuteKmChange={handleCommuteKmChange}
-                    onOpenMath={() => setShowMathModal(true)}
-                  />
-                </div>
-              )}
+              <div
+                id="panel-impact"
+                role="tabpanel"
+                aria-labelledby="tab-impact"
+                hidden={activeTab !== "impact"}
+                className={activeTab === "impact" ? "block" : "hidden"}
+              >
+                <DualImpactLedgers
+                  breatheLess={bundle.breathe_less}
+                  emitLess={bundle.emit_less}
+                  goldenStartHour={bundle.air_snapshot.golden_window.start_hour}
+                  walkOverrideHour={planConfig?.walk_override_hour ?? null}
+                  onWalkHourChange={handleWalkHourChange}
+                  onResetWalkHour={handleResetWalkHour}
+                  targetCommuteMode={planConfig?.target_commute_mode || "electric_metro"}
+                  onTargetCommuteChange={handleTargetCommuteChange}
+                  commuteKm={planConfig?.commute_km ?? 16}
+                  onCommuteKmChange={handleCommuteKmChange}
+                  onOpenMath={() => setShowMathModal(true)}
+                />
+              </div>
 
               {/* Keep GeminiChatDrawer mounted so chat history persists across tabs */}
               <div

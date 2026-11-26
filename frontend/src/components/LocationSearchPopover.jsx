@@ -95,7 +95,7 @@ export default function LocationSearchPopover({
         </span>
         <button
           type="button"
-          onClick={onClose}
+          onClick={() => onClose(true)}
           aria-label="Close location menu"
           className="rounded-lg p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
@@ -128,6 +128,7 @@ export default function LocationSearchPopover({
               type="button"
               aria-label="Clear city search"
               onClick={() => {
+                submitSeqRef.current += 1;
                 setSearchQuery("");
                 setSearchResults([]);
               }}

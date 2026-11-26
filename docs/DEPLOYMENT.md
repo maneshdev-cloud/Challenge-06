@@ -13,9 +13,9 @@ PRANA-AI supports single-origin full-stack deployment on **Vercel** ([`vercel.js
 | `GEMINI_API_KEYS` | Optional | Comma-separated pool of Gemini API keys checked ahead of single-key fallbacks. |
 | `PRANA_BUNDLE_SECRET` | Recommended in Prod | Dedicated server secret used for HMAC-SHA256 signing and verification of `EvidenceBundle` payloads across serverless instances and restarts. |
 | `ALLOWED_ORIGINS` | Recommended in Prod | Comma-separated allowlisted browser origins (e.g., `http://localhost:5173,http://127.0.0.1:5173,https://prana-ai-promptwars.vercel.app`). |
-| `VITE_API_BASE_URL` | Frontend Split Deploy | Set only if frontend and backend run on different origins (defaults to `/api` for Vite proxy and Vercel same-origin routing). |
-| `VITE_API_TARGET` | Optional (Local Dev) | Overrides Vite proxy destination (defaults to `http://127.0.0.1:8000`). |
-| `TRUST_PROXY_HEADERS` | Optional | Set `1` if deploying behind a custom reverse proxy outside Vercel/Render so `X-Forwarded-For` / `X-Real-IP` rate-limit resolution activates safely. |
+| `VITE_API_BASE_URL` | Frontend Split Deploy | Set only if frontend and backend run on different origins (defaults to `/api` for Vite proxy and Vercel same-origin routing). In split-origin production deploys, also add the backend origin to `connect-src` in [`vercel.json`](../vercel.json) (or proxy `/api/(.*)` through Vercel rewrites so `connect-src 'self'` remains valid). |
+| `VITE_API_TARGET` | Optional (Local Dev) | Overrides Vite proxy destination (defaults to `http://127.0.0.1:8000`; loaded from shell env or root `.env`). |
+| `TRUST_PROXY_HEADERS` | Optional | Set `1` **only** behind a custom reverse proxy outside Vercel/Render that strips/overwrites incoming `X-Forwarded-For` / `X-Real-IP` headers and restricts direct external access to the backend port; ignores `CF-Connecting-IP` unless `RENDER` is set. |
 
 ---
 
@@ -53,5 +53,6 @@ Both `GET /health` and `HEAD /health` return `200 OK` (`{"status":"ok","app":"PR
 ## 5. CI Verification Gate ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml))
 
 Every push and pull request targeting `main` runs:
-1. **Backend Job (Python 3.12):** `ruff check backend`, `ruff check --select C901,B backend`, `pylint --disable=too-many-locals,fixme backend/*.py`, `mypy backend`, `pytest -v backend/tests`, and `python scripts/smoke.py`.
-2. **Frontend Job (Node 22):** `npm ci`, `npm run lint` (`eslint` + `jsx-a11y`), `npm run test` (`vitest run`), and `npm run build` (`vite build`).
+1. **Backend Job (Python 3.12):** `ruff format --check backend scripts`, `ruff check backend scripts`, `ruff check --select C901,B backend`, raw `pylint backend/*.py` (`10.00/10`), `bandit -r backend -x backend/tests -q`, full transitive `pip-audit -r backend/requirements.txt`, `mypy backend`, `pytest -v --cov --cov-fail-under=90 backend/tests` (source-only line + branch coverage via `pyproject.toml`), and `python scripts/smoke.py`.
+2. **Frontend Job (Node 22):** `npm ci`, `npm run audit:deps` (`npm audit --omit=dev --audit-level=high`), `npm run lint` (`eslint` + `jsx-a11y`), `npm run test:coverage` (`vitest run --coverage`), `npm run build` (`vite build`), and `npm run bundle:check` (gzipped initial JS <= `95 kB` & non-preloaded lazy Recharts check).
+   *(Note: If deploying split Vercel + Render origins with `VITE_API_BASE_URL` instead of same-origin `/api` rewrites, add your exact backend origin to `connect-src` in `vercel.json`.)*
