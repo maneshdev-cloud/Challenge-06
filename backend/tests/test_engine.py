@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from data_fetcher import PRESETS, _build_replay_payload
+from data_fetcher import PRESETS, build_replay_payload
 from engine import (
     build_air_snapshot,
     build_daily_outlook,
@@ -101,7 +101,7 @@ def test_hourly_integrated_dosimetry_and_immutability() -> None:
     assert dose_no_mask == 299.0
     assert compute_inhaled_dose_ug(200.0, "walk_sidewalk", "elderly_walk", 60, "n95") == 59.8
 
-    raw = _build_replay_payload("delhi", "test")
+    raw = build_replay_payload("delhi", "test")
     snap = build_air_snapshot(raw, current_hour=8)
     integrated_4h, _, _ = compute_interval_dose_ug(
         snap.hourly, 8, 240, "open_road_2w_auto", "running_or_outdoor_work", "none"
@@ -145,7 +145,7 @@ def test_fixed_constraint_respected_for_delivery_rider() -> None:
     """Verify Delivery Rider's fixed 8h shifts are never shifted and never told 'stay home'."""
     rider_preset = next(p for p in PRESETS if p["id"] == "delivery_rider")
     bundle = build_evidence_bundle(
-        PlanRequest(**rider_preset), _build_replay_payload("delhi", "test"), current_hour=8
+        PlanRequest(**rider_preset), build_replay_payload("delhi", "test"), current_hour=8
     )
 
     fixed_shifts = [item for item in bundle.routine_plan if item.flexibility == "fixed"]
@@ -160,7 +160,7 @@ def test_fixed_constraint_respected_for_delivery_rider() -> None:
 
 def test_sanctuary_clamping_and_no_contradiction() -> None:
     """Verify Sanctuary score clamps at 0 and keeps shut when outdoor > indoor PM2.5."""
-    raw = _build_replay_payload("delhi", "test")
+    raw = build_replay_payload("delhi", "test")
     # Mean 24h ~100 -> sealed indoor ~28, daytime min = 80 (> indoor & > 60)
     raw["hourly_raw"]["pm2_5"] = [100.0] * 24
     raw["hourly_raw"]["pm2_5"][14] = 80.0
@@ -182,7 +182,7 @@ def test_sanctuary_clamping_and_no_contradiction() -> None:
 
 def test_category_threshold_100_vs_150_on_moderate_naqi() -> None:
     """Verify NAQI ~132 warns Kids, Seniors, Riders (>100) while Adults (>150) stay non-alert."""
-    raw = _build_replay_payload("pune", "test")
+    raw = build_replay_payload("pune", "test")
     raw["hourly_raw"]["pm2_5"][10] = 70.0
     raw["hourly_raw"]["pm10"][10] = 95.0
 
@@ -269,7 +269,7 @@ def test_category_threshold_100_vs_150_on_moderate_naqi() -> None:
 
 def test_user_categories_differentiate_lung_capacity_and_advice() -> None:
     """Verify Kids, Seniors, and Riders show distinct lung intake & advice on same city."""
-    raw = _build_replay_payload("pune", "test")
+    raw = build_replay_payload("pune", "test")
 
     kids_b = build_evidence_bundle(
         PlanRequest(
@@ -434,7 +434,7 @@ def test_duration_integrated_optimizer_and_midnight_nowrap() -> None:
             )
         ],
     )
-    raw = _build_replay_payload("delhi", "test")
+    raw = build_replay_payload("delhi", "test")
     raw["hourly_raw"]["pm2_5"] = spike_vals
     bundle = build_evidence_bundle(req_long, raw, current_hour=9)
     assert bundle.routine_plan[0].recommended_hour == 16
@@ -442,7 +442,7 @@ def test_duration_integrated_optimizer_and_midnight_nowrap() -> None:
 
 def test_peak_interval_mask_and_emit_less_phone_charges() -> None:
     """Multi-hour fixed task enters poor-PM2.5 peak hour -> triggers N95, plus phone charges."""
-    raw = _build_replay_payload("pune", "test")
+    raw = build_replay_payload("pune", "test")
     raw["hourly_raw"]["pm2_5"] = [30.0 if h != 10 else 110.0 for h in range(24)]
     req = PlanRequest(
         city="pune",
@@ -472,7 +472,7 @@ def test_peak_interval_mask_and_emit_less_phone_charges() -> None:
 
 def test_window_advice_unsealed_vs_sealed_alignment() -> None:
     """Window opening threshold compares outdoor minimum strictly against modeled indoor proxy."""
-    raw = _build_replay_payload("pune", "test")
+    raw = build_replay_payload("pune", "test")
     raw["hourly_raw"]["pm2_5"] = [55.0 if h == 13 else 180.0 for h in range(24)]
     snapshot = build_air_snapshot(raw, current_hour=9)
 
@@ -511,3 +511,77 @@ def test_engine_facade_exports_and_constants_parity() -> None:
 
     for lang_key in constants["room_audit_fallback_tips"]:
         assert f'key: "{lang_key}"' in js_text
+
+
+def test_post_midnight_naqi_slider_indoor_isolation_and_window_cap() -> None:
+    """Verify post-midnight PM10 NAQI, 2nd sensitive walk indoor rule, and cap explanation."""
+    from schemas import ActivityItem, HouseholdMember
+
+    # 1. Post-midnight 23:00 2h walk sees next-day midnight PM10=450 spike even if PM2.5 is low
+    raw = build_replay_payload("delhi", "test")
+    raw["hourly_raw"]["pm2_5"] = [25.0] * 24
+    raw["hourly_raw"]["pm10"] = [40.0] * 24
+    raw["hourly_raw"]["nitrogen_dioxide"] = [20.0] * 24
+    raw["multiday_raw"]["pm2_5"] = [25.0] * 120
+    raw["multiday_raw"]["pm10"] = [40.0] * 24 + [450.0] + [40.0] * 95
+    raw["multiday_raw"]["nitrogen_dioxide"] = [20.0] * 120
+    req_mid = PlanRequest(
+        city="delhi",
+        budget_tier="rs_0",
+        members=[HouseholdMember(name="Adult", age=32, conditions=["adult"])],
+        activities=[
+            ActivityItem(
+                id="late_walk",
+                name="Late Errand",
+                flexibility="fixed",
+                planned_hour=23,
+                duration_min=120,
+                activity_level="light_walk",
+                member_name="Adult",
+            )
+        ],
+    )
+    bundle_mid = build_evidence_bundle(req_mid, raw, current_hour=22)
+    assert bundle_mid.routine_plan[0].original_naqi > 150
+
+    # 2. On flat elevated day, walk #1 uses slider while sensitive walk #2 stays indoor
+    flat_raw = build_replay_payload("delhi", "test")
+    flat_raw["hourly_raw"]["pm2_5"] = [150.0] * 24
+    req_two = PlanRequest(
+        city="delhi",
+        budget_tier="under_500",
+        walk_override_hour=14,
+        members=[HouseholdMember(name="Dadi", age=70, conditions=["elderly"])],
+        activities=[
+            ActivityItem(
+                id="walk_1",
+                name="Morning Walk",
+                flexibility="flexible",
+                planned_hour=7,
+                duration_min=30,
+                activity_level="elderly_walk",
+                member_name="Dadi",
+            ),
+            ActivityItem(
+                id="walk_2",
+                name="Evening Walk",
+                flexibility="flexible",
+                planned_hour=18,
+                duration_min=30,
+                activity_level="elderly_walk",
+                member_name="Dadi",
+            ),
+        ],
+    )
+    bundle_two = build_evidence_bundle(req_two, flat_raw, current_hour=8)
+    assert bundle_two.routine_plan[0].badge == "WHAT-IF • TESTED"
+    assert bundle_two.routine_plan[1].badge == "FLEXIBLE • INDOOR"
+
+    # 3. When 90 cap blocks windows while indoor baseline > 90, guidance cites the 90 cap
+    cap_raw = build_replay_payload("delhi", "test")
+    cap_raw["hourly_raw"]["pm2_5"] = [400.0 if h < 7 or h > 18 else 95.0 for h in range(24)]
+    snap_cap = build_air_snapshot(cap_raw, current_hour=12)
+    wa_cap = score_sanctuary(PlanRequest(city="delhi", budget_tier="rs_0"), snap_cap).window_advice
+    assert wa_cap.modeled_indoor_baseline_pm25 > 90.0
+    assert wa_cap.action == "keep_shut_exhaust"
+    assert "90" in wa_cap.guidance

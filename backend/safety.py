@@ -5,15 +5,19 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 
-from data_fetcher import CONSTANTS
+from geo_india import CONSTANTS
 from schemas import EvidenceBundle
+
+logger = logging.getLogger("prana_ai.safety")
 
 PLACEHOLDER_KEY = "your_google_ai_studio_key_here"
 _EPHEMERAL_SECRET = secrets.token_bytes(32)
+CIG_EQUIV_UG = float(CONSTANTS["berkeley_earth_cig_ug"])
 
 EMERGENCY_KEYWORDS = (
     "wheezing",
@@ -81,48 +85,66 @@ HOUSEPLANT_CLAIM_PATTERN = re.compile(
 NEGATION_WORDS = ("not", "never", "don't", "do not", "no ", "avoid", "cannot", "won't")
 
 STALE_DISCLOSURE_TOKENS = (
-    "replay", "stale", "offline", "unavailable", "historical",
-    "पुरान", "उपलब्ध नहीं", "ऐतिहासिक", "रीप्ले", "रिप्ले",
-    "उपलब्ध नाही", "ಲಭ್ಯವಿಲ್ಲ", "ಹಿಂದಿನ", "উপলব্ধ নয়", "উপলব্ধ নয়", "ঐতিহাসিক",
-    "கிடைக்கவில்லை", "வரலாற்று", "అందుబాటులో లేదు", "చారిత్రక",
+    "replay",
+    "stale",
+    "offline",
+    "unavailable",
+    "historical",
+    "पुरान",
+    "उपलब्ध नहीं",
+    "ऐतिहासिक",
+    "रीप्ले",
+    "रिप्ले",
+    "उपलब्ध नाही",
+    "ಲಭ್ಯವಿಲ್ಲ",
+    "ಹಿಂದಿನ",
+    "উপলব্ধ নয়",
+    "উপলব্ধ নয়",
+    "ঐতিহাসিক",
+    "கிடைக்கவில்லை",
+    "வரலாற்று",
+    "అందుబాటులో లేదు",
+    "చారిత్రక",
 )
 
 PARTIAL_DISCLOSURE_TOKENS = (
-    "partial", "fallback", "backup", "missing", "बैकअप", "आंशिक",
-    "बॅकअप", "ಬ್ಯಾಕಪ್", "ব্যাকআপ", "மாற்று", "బ్యాకప్",
+    "partial",
+    "fallback",
+    "backup",
+    "missing",
+    "बैकअप",
+    "आंशिक",
+    "बॅकअप",
+    "ಬ್ಯಾಕಪ್",
+    "ব্যাকআপ",
+    "மாற்று",
+    "బ్యాకప్",
 ) + STALE_DISCLOSURE_TOKENS
 
-_DOCUMENTED_PCT_ALLOWLIST: list[float] = sorted({
-    float(CONSTANTS["engine_params"]["golden_window_min_reduction_pct"]),
-    *[
-        round(float(v) * 100.0, 1)
-        for v in CONSTANTS["mask_filtration_efficiency"].values()
-        if v > 0
-    ],
-    44.0,
-    65.0,
-    70.0,
-    95.0,
-})
+_DOCUMENTED_PCT_ALLOWLIST: list[float] = sorted(
+    {
+        float(CONSTANTS["engine_params"]["golden_window_min_reduction_pct"]),
+        *[
+            round(float(v) * 100.0, 1)
+            for v in CONSTANTS["mask_filtration_efficiency"].values()
+            if v > 0
+        ],
+        44.0,
+        65.0,
+        70.0,
+        95.0,
+    }
+)
 
 
 def _get_bundle_hmac_key() -> bytes:
-    """Resolve HMAC key from PRANA_BUNDLE_SECRET, environment seed, or ephemeral secret."""
+    """Resolve dedicated HMAC key from PRANA_BUNDLE_SECRET or local ephemeral fallback."""
     explicit = os.getenv("PRANA_BUNDLE_SECRET", "").strip()
     if explicit:
         return explicit.encode("utf-8")
-    seed_parts = [
-        val.strip()
-        for val in (
-            os.getenv("GEMINI_API_KEY", ""),
-            os.getenv("VERCEL_PROJECT_ID", ""),
-            os.getenv("VERCEL_ENV", ""),
-        )
-        if val.strip() and PLACEHOLDER_KEY not in val
-    ]
-    if seed_parts:
-        raw_seed = f"prana-ai-bundle-hmac-v1:{'|'.join(seed_parts)}"
-        return hashlib.sha256(raw_seed.encode("utf-8")).digest()
+    if os.getenv("VERCEL_ENV", "").strip() or os.getenv("RENDER", "").strip():
+        raise RuntimeError("PRANA_BUNDLE_SECRET must be set in deployed environments.")
+    logger.warning("PRANA_BUNDLE_SECRET unset; using per-process ephemeral HMAC key.")
     return _EPHEMERAL_SECRET
 
 
@@ -185,7 +207,7 @@ def _allowed_pool_for_unit(unit: str, bundle: EvidenceBundle) -> list[float]:
     if not has_typed:
         return bundle.grounded_numbers
 
-    dose_pool = gm.dose_ug + [float(x) for x in bundle.grounded_numbers if x == 330.0]
+    dose_pool = gm.dose_ug + [float(x) for x in bundle.grounded_numbers if x == CIG_EQUIV_UG]
     unit_map: dict[str, list[float]] = {
         "ug/m3": gm.pm25,
         "µg/m3": gm.pm25,
@@ -207,23 +229,23 @@ def _allowed_pool_for_unit(unit: str, bundle: EvidenceBundle) -> list[float]:
     return pool if pool is not None else bundle.grounded_numbers
 
 
-def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[str]]:
-    """Validate GenAI narrative for banned claims, provenance honesty, and metric numbers."""
-    if not text or not text.strip():
-        return False, ["Empty narrative output"]
-
+def _check_safety_claims(text: str) -> list[str]:
+    """Verify output neither labels polluted outdoor windows 'safe' nor recommends houseplants."""
     reasons: list[str] = []
-
     if SAFE_WINDOW_CLAIM_PATTERN.search(text):
         reasons.append("Narrative incorrectly labeled a polluted window as 'safe'.")
+    for clause in re.split(r"[.!?;,\n]+", text):
+        if HOUSEPLANT_CLAIM_PATTERN.search(clause) and not any(
+            neg in clause.lower() for neg in NEGATION_WORDS
+        ):
+            reasons.append("Narrative recommended houseplants for PM2.5 removal.")
+            break
+    return reasons
 
-    for sentence in re.split(r"[.!?\n]+", text):
-        if HOUSEPLANT_CLAIM_PATTERN.search(sentence):
-            s_low = sentence.lower()
-            if not any(neg in s_low for neg in NEGATION_WORDS):
-                reasons.append("Narrative recommended houseplants for PM2.5 removal.")
-                break
 
+def _check_metric_grounding(text: str, bundle: EvidenceBundle) -> list[str]:
+    """Verify all metric-bound numbers and AQI citations match grounded category allowlists."""
+    reasons: list[str] = []
     for match in METRIC_NUMBER_PATTERN.finditer(text):
         val = float(match.group("num").replace(",", ""))
         pool = _allowed_pool_for_unit(match.group("unit"), bundle)
@@ -237,14 +259,29 @@ def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[st
         val = float(match.group("num").replace(",", ""))
         if not _is_number_grounded(val, naqi_pool):
             reasons.append(f"Ungrounded AQI value '{match.group(0)}' not found in NAQI pool.")
+    return reasons
 
+
+def _check_provenance_disclosure(text: str, bundle: EvidenceBundle) -> list[str]:
+    """Ensure stale replay and partial-fallback conditions are disclosed honestly in output."""
     low = text.lower()
     if bundle.provenance.is_stale or bundle.provenance.is_fallback_replay:
         if not any(tok in low for tok in STALE_DISCLOSURE_TOKENS):
-            reasons.append("Stale/replay provenance was not disclosed in narrative.")
+            return ["Stale/replay provenance was not disclosed in narrative."]
     elif bundle.provenance.is_partial_fallback and not any(
         tok in low for tok in PARTIAL_DISCLOSURE_TOKENS
     ):
-        reasons.append("Partial fallback provenance was not disclosed in narrative.")
+        return ["Partial forecast fallback was not disclosed in narrative."]
+    return []
 
+
+def validate_narrative(text: str, bundle: EvidenceBundle) -> tuple[bool, list[str]]:
+    """Validate GenAI narrative for banned claims, provenance honesty, and metric numbers."""
+    if not text or not text.strip():
+        return False, ["Empty narrative output"]
+    reasons = [
+        *_check_safety_claims(text),
+        *_check_metric_grounding(text, bundle),
+        *_check_provenance_disclosure(text, bundle),
+    ]
     return len(reasons) == 0, reasons

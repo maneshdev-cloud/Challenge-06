@@ -86,6 +86,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-teal-50/30 pb-10">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-[60] focus:rounded-xl focus:bg-slate-900 focus:px-4 focus:py-2 focus:text-xs focus:font-bold focus:text-white focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
       <HeaderBar
         citiesMap={citiesMap}
         city={planConfig?.city || "mumbai"}
@@ -108,7 +114,11 @@ export default function App() {
         onOpenInstallModal={() => setInstallModalOpen(true)}
       />
 
-      <main className="mx-auto max-w-5xl space-y-5 px-4 pt-6 sm:px-6">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="mx-auto max-w-5xl space-y-5 px-4 pt-6 focus:outline-none sm:px-6"
+      >
         <EmergencyBanner
           message={emergencyBannerMsg}
           onDismiss={() => setEmergencyBannerMsg(null)}

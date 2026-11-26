@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from data_fetcher import CONSTANTS, IST_TZ
+from geo_india import CONSTANTS, IST_TZ
 from schemas import (
     AirSnapshotResponse,
     DailyAirOutlook,
@@ -94,40 +94,51 @@ def _find_best_daytime_pair(pm25_day: list[float]) -> tuple[int, float, float]:
     return best_h, best_mean, reduction_pct
 
 
+def _golden_window_advisory(
+    window_label: str,
+    stats: tuple[float, int, float, float],
+    flags: tuple[bool, bool],
+) -> str:
+    """Build deterministic Golden Window summary copy without calling outdoor smog safe."""
+    best_mean, mean_naqi, morning_peak, reduction_pct = stats
+    is_clean_air_day, has_meaningful_window = flags
+    if is_clean_air_day:
+        return (
+            "Air quality stays Good/Satisfactory across all 24 hours—normal outdoor routines are "
+            "fine; keep kitchen exhaust habits active."
+        )
+    if has_meaningful_window:
+        return (
+            f"Lowest-exposure daytime window is {window_label} ({round(best_mean, 1)} ug/m3 PM2.5, "
+            f"estimated hourly AQI {mean_naqi}), {reduction_pct:.0f}% lower than morning peak "
+            f"({round(morning_peak, 1)} ug/m3) as daytime mixing lifts the boundary layer."
+        )
+    return (
+        f"No strong daytime dip today: best 2h window ({window_label}, {round(best_mean, 1)} "
+        f"ug/m3) is only {max(0.0, reduction_pct):.0f}% below morning peak "
+        f"({round(morning_peak, 1)} ug/m3). Outdoor air stays uniformly elevated—"
+        "shift strenuous exercise indoors."
+    )
+
+
 def find_golden_window(hourly_points: list[HourlyAirPoint]) -> GoldenWindow:
     """Scan daytime hours for lowest 2h PM2.5 window, verifying full 24h clean-air status."""
     min_red_pct = float(ENGINE_PARAMS["golden_window_min_reduction_pct"])
     pm25_series = [pt.pm2_5 for pt in hourly_points]
     best_h, best_mean, reduction_pct = _find_best_daytime_pair(pm25_series)
     morning_peak = max(pm25_series[6:10])
-
     mean_naqi = int(
         round((hourly_points[best_h].cpcb_naqi + hourly_points[best_h + 1].cpcb_naqi) / 2.0)
     )
-    max_naqi_24h = max(pt.cpcb_naqi for pt in hourly_points)
-    is_clean_air_day = max_naqi_24h <= 100
+    is_clean_air_day = max(pt.cpcb_naqi for pt in hourly_points) <= 100
     has_meaningful_window = is_clean_air_day or (reduction_pct >= min_red_pct)
     window_label = f"{best_h:02d}:00 - {best_h + 2:02d}:00"
 
-    if is_clean_air_day:
-        advisory = (
-            "Air quality stays Good/Satisfactory across all 24 hours—normal outdoor routines are "
-            "fine; keep kitchen exhaust habits active."
-        )
-    elif has_meaningful_window:
-        advisory = (
-            f"Lowest-exposure daytime window is {window_label} ({round(best_mean, 1)} ug/m3 PM2.5, "
-            f"estimated hourly AQI {mean_naqi}), {reduction_pct:.0f}% lower than morning peak "
-            f"({round(morning_peak, 1)} ug/m3) as daytime mixing lifts the boundary layer."
-        )
-    else:
-        advisory = (
-            f"No strong daytime dip today: best 2h window ({window_label}, {round(best_mean, 1)} "
-            f"ug/m3) is only {max(0.0, reduction_pct):.0f}% below morning peak "
-            f"({round(morning_peak, 1)} ug/m3). Outdoor air stays uniformly elevated—"
-            "shift strenuous exercise indoors."
-        )
-
+    advisory = _golden_window_advisory(
+        window_label,
+        (best_mean, mean_naqi, morning_peak, reduction_pct),
+        (is_clean_air_day, has_meaningful_window),
+    )
     return GoldenWindow(
         start_hour=best_h,
         end_hour=best_h + 2,
@@ -160,6 +171,22 @@ def classify_meteorology_regime(hourly_points: list[HourlyAirPoint]) -> tuple[fl
     return round(morning_pblh, 1), regime
 
 
+def _daily_outlook_tip(peak_naqi: int, has_meaningful: bool, best_label: str) -> str:
+    """Select an honest daily guidance tip for one 24h outlook window."""
+    if peak_naqi <= 100:
+        return "Good day for outdoor errands and walks."
+    if not has_meaningful:
+        return (
+            "Uniformly elevated air all day (<15% midday drop)—keep heavy workouts indoors "
+            "and wear a fitted N95 for essential outdoor trips."
+        )
+    if peak_naqi <= 200:
+        return f"Schedule flexible errands around {best_label}."
+    if peak_naqi <= 300:
+        return f"Poor air expected—limit trips to {best_label} with a fitted N95 mask."
+    return "Heavy smog expected—keep strenuous exercise indoors and seal rooms."
+
+
 def _summarize_single_day_outlook(
     day_idx: int,
     day_date: str,
@@ -175,28 +202,13 @@ def _summarize_single_day_outlook(
     except ValueError:
         day_label = "Today" if day_idx == 0 else f"Day {day_idx + 1}"
 
-    day_naqis = [
+    peak_naqi = max(
         int(compute_hourly_naqi(day_pm25[h], day_pm10[h], day_no2[h])["cpcb_naqi"])
         for h in range(24)
-    ]
-    peak_naqi = max(day_naqis)
+    )
     best_h, best_mean, reduction_pct = _find_best_daytime_pair(day_pm25)
     has_meaningful = (peak_naqi <= 100) or (reduction_pct >= min_red_pct)
     best_label = f"{best_h:02d}:00 - {best_h + 2:02d}:00"
-
-    if peak_naqi <= 100:
-        tip = "Good day for outdoor errands and walks."
-    elif not has_meaningful:
-        tip = (
-            "Uniformly elevated air all day (<15% midday drop)—keep heavy workouts indoors "
-            "and wear a fitted N95 for essential outdoor trips."
-        )
-    elif peak_naqi <= 200:
-        tip = f"Schedule flexible errands around {best_label}."
-    elif peak_naqi <= 300:
-        tip = f"Poor air expected—limit trips to {best_label} with a fitted N95 mask."
-    else:
-        tip = "Heavy smog expected—keep strenuous exercise indoors and seal rooms."
 
     return DailyAirOutlook(
         date=day_date,
@@ -208,7 +220,7 @@ def _summarize_single_day_outlook(
         best_window_pm25=round(best_mean, 1),
         reduction_pct=reduction_pct,
         has_meaningful_window=has_meaningful,
-        tip=tip,
+        tip=_daily_outlook_tip(peak_naqi, has_meaningful, best_label),
     )
 
 
@@ -259,37 +271,42 @@ def _build_hourly_point(h: int, hr: dict[str, Any]) -> HourlyAirPoint:
     )
 
 
+def _resolve_snapshot_meta(
+    raw_payload: dict[str, Any], city_meta: dict[str, Any]
+) -> tuple[LanguageCode, str, str]:
+    """Resolve suggested language, display city name, and meteorology note."""
+    city_key = str(raw_payload["city"])
+    raw_lang = str(raw_payload.get("suggested_language") or city_meta.get("local_language") or "hi")
+    supported_langs = {"en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"}
+    sugg_lang: LanguageCode = cast(LanguageCode, raw_lang if raw_lang in supported_langs else "hi")
+    city_name = str(raw_payload.get("city_display") or city_meta.get("name") or city_key.title())
+    met_note = str(raw_payload.get("meteorology_note") or city_meta.get("meteorology_note", ""))
+    return sugg_lang, city_name, met_note
+
+
 def build_air_snapshot(
     raw_payload: dict[str, Any], current_hour: int | None = None
 ) -> AirSnapshotResponse:
     """Convert fetched hourly arrays into a CPCB-breakpoint AirSnapshotResponse."""
     city_key = raw_payload["city"]
     city_meta = CONSTANTS["cities"].get(city_key, {})
-    hr = raw_payload["hourly_raw"]
-
-    hourly_points = [_build_hourly_point(h, hr) for h in range(24)]
+    hourly_points = [_build_hourly_point(h, raw_payload["hourly_raw"]) for h in range(24)]
     resolved_hour = current_hour if current_hour is not None else datetime.now(IST_TZ).hour
     hour_idx = max(0, min(23, resolved_hour))
     current_pt = hourly_points[hour_idx]
-    golden_window = find_golden_window(hourly_points)
     inversion_m, regime = classify_meteorology_regime(hourly_points)
-
-    raw_lang = str(raw_payload.get("suggested_language") or city_meta.get("local_language") or "hi")
-    supported_langs = {"en", "hinglish", "hi", "mr", "kn", "bn", "ta", "te"}
-    sugg_lang: LanguageCode = cast(LanguageCode, raw_lang if raw_lang in supported_langs else "hi")
+    sugg_lang, city_name, met_note = _resolve_snapshot_meta(raw_payload, city_meta)
 
     return AirSnapshotResponse(
         city=city_key,
-        city_name=str(raw_payload.get("city_display") or city_meta.get("name") or city_key.title()),
+        city_name=city_name,
         area_name=raw_payload.get("area_name"),
         state=raw_payload.get("state"),
         lat=raw_payload.get("lat"),
         lon=raw_payload.get("lon"),
         is_coastal=bool(raw_payload.get("is_coastal", False)),
         suggested_language=sugg_lang,
-        meteorology_note=str(
-            raw_payload.get("meteorology_note") or city_meta.get("meteorology_note", "")
-        ),
+        meteorology_note=met_note,
         current_hour=hour_idx,
         current_pm25=current_pt.pm2_5,
         current_naqi=current_pt.cpcb_naqi,
@@ -297,7 +314,7 @@ def build_air_snapshot(
         dominant_pollutant=current_pt.dominant_pollutant,
         morning_inversion_ceiling_m=inversion_m,
         meteorology_regime=regime,
-        golden_window=golden_window,
+        golden_window=find_golden_window(hourly_points),
         hourly=hourly_points,
         daily_outlook=build_daily_outlook(raw_payload),
         provenance=DataProvenance(**raw_payload["provenance"]),

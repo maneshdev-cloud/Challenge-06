@@ -17,3 +17,10 @@ dist/
 frontend/node_modules/
 frontend/dist/
 npm-debug.log*
+
+bandit_results.json
+frontend/eslint_results.json
+AUDIT_REPORT.md
+.qodo/
+.vscode/
+*.zip

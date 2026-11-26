@@ -3,13 +3,14 @@ import react from "@vitejs/plugin-react";
 
 const apiProxy = {
   "/api": {
-    target: "http://127.0.0.1:8000",
+    target: process.env.VITE_API_TARGET || "http://127.0.0.1:8000",
     changeOrigin: true,
     rewrite: (path) => path.replace(/^\/api/, "")
   }
 };
 
 export default defineConfig({
+  envDir: "..",
   plugins: [react()],
   server: {
     port: 5173,
@@ -25,6 +26,9 @@ export default defineConfig({
     setupFiles: "./src/test/setup.js"
   },
   build: {
+    target: "es2022",
+    sourcemap: false,
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks: {

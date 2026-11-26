@@ -3,20 +3,45 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from contextlib import suppress
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 
+from geo_india import (
+    CONSTANTS,
+    FALLBACK_REPLAY,
+    IST_TZ,
+    PRESETS,
+    build_meteorology_note,
+    is_coastal_location,
+    local_geocode_fallback,
+    nearest_featured_city,
+    suggest_language_for_state,
+)
+
+__all__ = [
+    "CONSTANTS",
+    "FALLBACK_REPLAY",
+    "IST_TZ",
+    "PRESETS",
+    "build_meteorology_note",
+    "build_replay_payload",
+    "clear_cache",
+    "fetch_city_atmospheric_data",
+    "geocode_india",
+    "is_coastal_location",
+    "nearest_featured_city",
+    "reverse_geocode_india",
+    "suggest_language_for_state",
+]
+
 logger = logging.getLogger("prana_ai.data_fetcher")
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-IST_TZ = timezone(timedelta(hours=5, minutes=30))
 CACHE_TTL_SECONDS = 900  # 15 minutes
 CACHE_MAX_ENTRIES = 256
 
@@ -28,69 +53,20 @@ BIGDATACLOUD_REVERSE_URL = "https://api.bigdatacloud.net/data/reverse-geocode-cl
 SPATIAL_RES_LIVE = "~40 km CAMS Global (3-hourly interpolated) + Weather Forecast"
 SPATIAL_RES_REPLAY = "City-level historical replay profile (no live spatial grid)"
 
-
-def load_json_data(filename: str) -> Any:
-    """Load a JSON file from backend/data/."""
-    with open(DATA_DIR / filename, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-CONSTANTS: dict[str, Any] = load_json_data("constants.json")
-FALLBACK_REPLAY: dict[str, Any] = load_json_data("fallback_replay.json")
-PRESETS: list[dict[str, Any]] = load_json_data("presets.json")
-
+_LIVE_AQ_SERIES: tuple[tuple[str, bool], ...] = (
+    ("pm2_5", False),
+    ("pm10", False),
+    ("nitrogen_dioxide", False),
+    ("us_aqi", True),
+)
+_LIVE_WX_SERIES: tuple[str, ...] = (
+    "temperature_2m",
+    "relative_humidity_2m",
+    "wind_speed_10m",
+    "boundary_layer_height",
+)
+_MULTIDAY_SERIES: tuple[str, ...] = ("pm2_5", "pm10", "nitrogen_dioxide")
 _TTL_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
-
-STATE_LANGUAGE_MAP = {
-    "maharashtra": "mr",
-    "goa": "mr",
-    "karnataka": "kn",
-    "west bengal": "bn",
-    "tripura": "bn",
-    "tamil nadu": "ta",
-    "puducherry": "ta",
-    "telangana": "te",
-    "andhra pradesh": "te",
-    "delhi": "hi",
-    "national capital territory of delhi": "hi",
-    "uttar pradesh": "hi",
-    "haryana": "hi",
-    "rajasthan": "hi",
-    "bihar": "hi",
-    "madhya pradesh": "hi",
-    "jharkhand": "hi",
-    "uttarakhand": "hi",
-    "chhattisgarh": "hi",
-    "himachal pradesh": "hi",
-    "chandigarh": "hi",
-}
-
-COASTAL_STATES = {
-    "goa",
-    "kerala",
-    "tamil nadu",
-    "puducherry",
-    "andaman and nicobar islands",
-    "lakshadweep",
-    "daman and diu",
-    "dadra and nagar haveli and daman and diu",
-}
-
-COASTAL_CITIES = {
-    "mumbai",
-    "chennai",
-    "kochi",
-    "visakhapatnam",
-    "thiruvananthapuram",
-    "mangaluru",
-    "mangalore",
-    "surat",
-    "panaji",
-    "puducherry",
-    "kozhikode",
-    "puri",
-    "navi mumbai",
-}
 
 
 def clear_cache() -> None:
@@ -98,10 +74,29 @@ def clear_cache() -> None:
     _TTL_CACHE.clear()
 
 
+def _current_ist_date() -> str:
+    """Return today's YYYY-MM-DD date string in Asia/Kolkata."""
+    return datetime.now(IST_TZ).strftime("%Y-%m-%d")
+
+
+def _payload_day0(payload: dict[str, Any] | None) -> str:
+    """Return the day-0 YYYY-MM-DD date embedded in a cached payload, or empty string."""
+    if not payload:
+        return ""
+    times = (payload.get("hourly_raw") or {}).get("time") or []
+    return str(times[0])[:10] if times else ""
+
+
 def _prune_and_store_cache(cache_key: str, payload: dict[str, Any]) -> None:
     """Evict expired entries and enforce bounded LRU cache size."""
     now_mono = time.monotonic()
-    expired = [k for k, (ts, _) in _TTL_CACHE.items() if (now_mono - ts) >= CACHE_TTL_SECONDS]
+    today_ist = _current_ist_date()
+    expired = [
+        k
+        for k, (ts, item) in _TTL_CACHE.items()
+        if (now_mono - ts) >= CACHE_TTL_SECONDS
+        or ((day0 := _payload_day0(item)) and day0 != today_ist)
+    ]
     for k in expired:
         _TTL_CACHE.pop(k, None)
     _TTL_CACHE[cache_key] = (now_mono, payload)
@@ -111,14 +106,17 @@ def _prune_and_store_cache(cache_key: str, payload: dict[str, Any]) -> None:
 
 
 def _get_cached_entry(cache_key: str) -> tuple[bool, dict[str, Any] | None]:
-    """Return (is_fresh, cached_payload) from the bounded TTL cache."""
+    """Return (is_fresh, same_day_payload) from the bounded TTL cache."""
     cached = _TTL_CACHE.get(cache_key)
     if not cached:
         return False, None
     ts, payload = cached
+    day0 = _payload_day0(payload)
+    if day0 and day0 != _current_ist_date():
+        _TTL_CACHE.pop(cache_key, None)
+        return False, None
     _TTL_CACHE.move_to_end(cache_key)
-    is_fresh = (time.monotonic() - ts) < CACHE_TTL_SECONDS
-    return is_fresh, payload
+    return (time.monotonic() - ts) < CACHE_TTL_SECONDS, payload
 
 
 async def _fetch_json(
@@ -127,80 +125,15 @@ async def _fetch_json(
     http_client: httpx.AsyncClient | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Fetch JSON via caller's AsyncClient or a short-lived pooled client."""
-    owns_client = http_client is None
-    client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=3.5))
-    try:
-        resp = await client.get(url, params=params)
-    finally:
-        if owns_client:
-            await client.aclose()
+    """Fetch JSON via caller's AsyncClient or a scoped short-lived AsyncClient."""
+    if http_client is None:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=3.5)) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            return dict(resp.json())
+    resp = await http_client.get(url, params=params)
     resp.raise_for_status()
     return dict(resp.json())
-
-
-def suggest_language_for_state(state: str | None, city_key: str | None = None) -> str:
-    """Suggest a local Indian language from state name or featured city key."""
-    if city_key and city_key in CONSTANTS["cities"]:
-        return str(CONSTANTS["cities"][city_key]["local_language"])
-    if state:
-        s_low = state.strip().lower()
-        for key, lang in STATE_LANGUAGE_MAP.items():
-            if key in s_low:
-                return lang
-    return "hi"
-
-
-def is_coastal_location(
-    lat: float,
-    lon: float,
-    state: str | None = None,
-    city_key: str | None = None,
-) -> bool:
-    """Classify coastal vs. inland meteorology from city/state or shoreline coordinates."""
-    if city_key and city_key.strip().lower() in COASTAL_CITIES:
-        return True
-    if state and state.strip().lower() in COASTAL_STATES:
-        return True
-    west_coast = 8.0 <= lat <= 22.8 and 68.5 <= lon <= 73.5
-    east_coast = (
-        8.0 <= lat <= 21.8 and 79.6 <= lon <= 87.5 and lat <= (13.0 + (lon - 79.8) * 1.4)
-    )
-    return west_coast or east_coast
-
-
-def nearest_featured_city(lat: float, lon: float) -> str:
-    """Return nearest featured city key for historical replay fallback."""
-    best_key = "delhi"
-    best_dist = float("inf")
-    for key, meta in CONSTANTS["cities"].items():
-        d_lat = lat - float(meta["lat"])
-        d_lon = lon - float(meta["lon"])
-        dist = d_lat * d_lat + d_lon * d_lon
-        if dist < best_dist:
-            best_dist = dist
-            best_key = key
-    return best_key
-
-
-def build_meteorology_note(lat: float, coastal: bool, city_key: str | None = None) -> str:
-    """Generate dynamic coastal vs. northern/inland Indian atmospheric dispersion context."""
-    if city_key and city_key in CONSTANTS["cities"]:
-        return str(CONSTANTS["cities"][city_key]["meteorology_note"])
-    if coastal:
-        return (
-            "Coastal Indian profile: sea-breeze transitions often improve daytime dispersion, "
-            "while calm mornings and roadside traffic corridors still create localized peaks."
-        )
-    if lat >= 23.5:
-        return (
-            "Northern / Indo-Gangetic inland profile: winter nocturnal thermal inversions and "
-            "low winds trap PM2.5 near ground level until daytime warming lifts the boundary layer."
-        )
-    return (
-        "Inland plateau/basin profile: overnight cooling near the surface traps morning emissions "
-        "before midday convection widens the boundary layer."
-    )
 
 
 def _sanitize_series(
@@ -218,9 +151,13 @@ def _sanitize_series(
         if raw is None:
             fallback_count += 1
             raw = cleaned[-1] if cleaned else fallback[idx]
-        val = int(round(float(raw))) if as_int else round(float(raw), 1)
-        cleaned.append(val)
+        cleaned.append(int(round(float(raw))) if as_int else round(float(raw), 1))
     return cleaned, fallback_count
+
+
+def _format_series_value(raw: Any, as_int: bool) -> Any:
+    """Round one hourly float/int series sample cleanly."""
+    return int(round(float(raw))) if as_int else round(float(raw), 1)
 
 
 def _sanitize_multiday_series(
@@ -232,12 +169,11 @@ def _sanitize_multiday_series(
     """Sanitize a 5x24h series, counting unique future-day (idx >= 24) fallback substitutions."""
     total = days * 24
     if not values or len(values) < 24:
-        out: list[Any] = []
-        for d in range(days):
-            scale = 1.0 if d == 0 else (0.94 + (d % 3) * 0.05)
-            for v in fallback_day:
-                val = int(round(float(v) * scale)) if as_int else round(float(v) * scale, 1)
-                out.append(val)
+        out = [
+            _format_series_value(float(v) * (1.0 if d == 0 else (0.94 + (d % 3) * 0.05)), as_int)
+            for d in range(days)
+            for v in fallback_day
+        ]
         return out, max(0, total - 24)
 
     cleaned: list[Any] = []
@@ -248,46 +184,10 @@ def _sanitize_multiday_series(
             if idx >= 24:
                 future_fallback_count += 1
                 raw = cleaned[idx - 24]
-            elif cleaned:
-                raw = cleaned[-1]
             else:
-                raw = fallback_day[idx % 24]
-        val = int(round(float(raw))) if as_int else round(float(raw), 1)
-        cleaned.append(val)
+                raw = cleaned[-1] if cleaned else fallback_day[idx % 24]
+        cleaned.append(_format_series_value(raw, as_int))
     return cleaned, future_fallback_count
-
-
-def _local_geocode_fallback(query: str, count: int) -> list[dict[str, Any]]:
-    """Offline matcher across featured cities and preset areas."""
-    q_low = query.lower()
-    matches: list[dict[str, Any]] = []
-    for c_key, meta in CONSTANTS["cities"].items():
-        if q_low in meta["name"].lower() or q_low in c_key:
-            matches.append(
-                {
-                    "name": meta["name"],
-                    "state": meta["name"],
-                    "district": "",
-                    "lat": meta["lat"],
-                    "lon": meta["lon"],
-                    "suggested_language": meta["local_language"],
-                    "is_coastal": is_coastal_location(meta["lat"], meta["lon"], city_key=c_key),
-                }
-            )
-        for area in meta.get("areas", []):
-            if q_low in area["name"].lower():
-                matches.append(
-                    {
-                        "name": f"{area['name']}, {meta['name']}",
-                        "state": meta["name"],
-                        "district": meta["name"],
-                        "lat": area["lat"],
-                        "lon": area["lon"],
-                        "suggested_language": meta["local_language"],
-                        "is_coastal": is_coastal_location(area["lat"], area["lon"], city_key=c_key),
-                    }
-                )
-    return matches[:count]
 
 
 async def geocode_india(
@@ -303,31 +203,79 @@ async def geocode_india(
     params = {"name": q, "count": count, "countryCode": "IN", "format": "json"}
     try:
         data = await _fetch_json(OPEN_METEO_GEOCODE_URL, params, http_client=http_client)
-        formatted: list[dict[str, Any]] = []
-        for item in data.get("results") or []:
-            lat = round(float(item["latitude"]), 4)
-            lon = round(float(item["longitude"]), 4)
-            state = item.get("admin1") or ""
-            name = item["name"]
-            formatted.append(
-                {
-                    "name": name,
-                    "state": state,
-                    "district": item.get("admin2") or "",
-                    "lat": lat,
-                    "lon": lon,
-                    "suggested_language": suggest_language_for_state(state, name.lower()),
-                    "is_coastal": is_coastal_location(lat, lon, state, name.lower()),
-                }
-            )
+        formatted = [
+            {
+                "name": item["name"],
+                "state": (state := item.get("admin1") or ""),
+                "district": item.get("admin2") or "",
+                "lat": (lat := round(float(item["latitude"]), 4)),
+                "lon": (lon := round(float(item["longitude"]), 4)),
+                "suggested_language": suggest_language_for_state(state, item["name"].lower()),
+                "is_coastal": is_coastal_location(
+                    lat,
+                    lon,
+                    state,
+                    item["name"].lower() if item["name"].lower() in CONSTANTS["cities"] else None,
+                ),
+            }
+            for item in data.get("results") or []
+        ]
         if formatted:
             return formatted
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning(
             "Open-Meteo geocoding failed (%s); using local India fallback.", type(exc).__name__
         )
+    return local_geocode_fallback(q, count)
 
-    return _local_geocode_fallback(q, count)
+
+def _extract_locality_from_admins(data: dict[str, Any], city: str, state: str) -> str:
+    """Extract sub-city locality name from BigDataCloud administrative hierarchy."""
+    admins = data.get("localityInfo", {}).get("administrative") or []
+    skip = {city.lower(), state.lower(), "india"}
+    sub_names = [
+        name_val
+        for a in admins
+        if (name_val := (a.get("name") or "").strip()) and name_val.lower() not in skip
+    ]
+    return sub_names[-1] if sub_names else ""
+
+
+def _reverse_geocode_fallback(lat: float, lon: float, nearest_key: str) -> dict[str, Any]:
+    """Build nearest featured-city metadata when reverse geocoding fails."""
+    nearest_meta = CONSTANTS["cities"][nearest_key]
+    return {
+        "area_name": f"Near {nearest_meta['name']}",
+        "city": nearest_meta["name"],
+        "state": "",
+        "lat": round(float(lat), 4),
+        "lon": round(float(lon), 4),
+        "suggested_language": nearest_meta["local_language"],
+        "is_coastal": is_coastal_location(lat, lon, city_key=nearest_key),
+    }
+
+
+def _parse_reverse_geocode_payload(
+    data: dict[str, Any], lat: float, lon: float, fallback_city_name: str
+) -> dict[str, Any]:
+    """Normalize BigDataCloud reverse-geocode payload into unified location dictionary."""
+    city = (data.get("city") or "").strip()
+    locality = (data.get("locality") or "").strip()
+    state = (data.get("principalSubdivision") or "").strip()
+    if not locality or locality.lower() == city.lower():
+        locality = _extract_locality_from_admins(data, city, state) or locality
+    resolved_city = city or locality or fallback_city_name
+    city_low = resolved_city.lower()
+    known_key = city_low if city_low in CONSTANTS["cities"] else None
+    return {
+        "area_name": locality or resolved_city,
+        "city": resolved_city,
+        "state": state,
+        "lat": round(float(lat), 4),
+        "lon": round(float(lon), 4),
+        "suggested_language": suggest_language_for_state(state, city_low),
+        "is_coastal": is_coastal_location(lat, lon, state=state, city_key=known_key),
+    }
 
 
 async def reverse_geocode_india(
@@ -338,56 +286,63 @@ async def reverse_geocode_india(
     """Resolve GPS coordinates to a readable Area, City in India via BigDataCloud."""
     nearest_key = nearest_featured_city(lat, lon)
     nearest_meta = CONSTANTS["cities"][nearest_key]
-
     try:
         params = {"latitude": lat, "longitude": lon, "localityLanguage": "en"}
         data = await _fetch_json(BIGDATACLOUD_REVERSE_URL, params, http_client=http_client)
-        city = (data.get("city") or "").strip()
-        locality = (data.get("locality") or "").strip()
-        state = (data.get("principalSubdivision") or "").strip()
-
-        if not locality or locality.lower() == city.lower():
-            admins = data.get("localityInfo", {}).get("administrative") or []
-            skip = {city.lower(), state.lower(), "india"}
-            sub_names = [
-                name_val
-                for a in admins
-                if (name_val := (a.get("name") or "").strip()) and name_val.lower() not in skip
-            ]
-            if sub_names:
-                locality = sub_names[-1]
-
-        resolved_city = city or locality or nearest_meta["name"]
-        resolved_area = locality or resolved_city
-        return {
-            "area_name": resolved_area,
-            "city": resolved_city,
-            "state": state,
-            "lat": round(float(lat), 4),
-            "lon": round(float(lon), 4),
-            "suggested_language": suggest_language_for_state(state, resolved_city.lower()),
-            "is_coastal": is_coastal_location(
-                lat, lon, state=state, city_key=resolved_city.lower()
-            ),
-        }
+        return _parse_reverse_geocode_payload(data, lat, lon, str(nearest_meta["name"]))
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.warning(
             "Reverse geocoding failed (%s); falling back near %s.",
             type(exc).__name__,
             nearest_meta["name"],
         )
-        return {
-            "area_name": f"Near {nearest_meta['name']}",
-            "city": nearest_meta["name"],
-            "state": "",
-            "lat": round(float(lat), 4),
-            "lon": round(float(lon), 4),
-            "suggested_language": nearest_meta["local_language"],
-            "is_coastal": is_coastal_location(lat, lon, city_key=nearest_key),
-        }
+        return _reverse_geocode_fallback(lat, lon, nearest_key)
 
 
-def _build_replay_payload(
+def _build_replay_series(
+    replay_city: dict[str, Any], replay_date: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build 24h and 5-day hourly dictionaries from cached replay profiles."""
+    base_dt = datetime.strptime(replay_date, "%Y-%m-%d")
+    multi_times = [
+        (base_dt + timedelta(days=d)).strftime("%Y-%m-%d") + f"T{h:02d}:00"
+        for d in range(5)
+        for h in range(24)
+    ]
+    hourly_raw: dict[str, Any] = {"time": [f"{replay_date}T{h:02d}:00" for h in range(24)]}
+    for key, _ in _LIVE_AQ_SERIES:
+        hourly_raw[key] = list(replay_city[key])
+    for key in _LIVE_WX_SERIES:
+        hourly_raw[key] = list(replay_city[key])
+
+    multiday_raw: dict[str, Any] = {"time": multi_times}
+    for key in _MULTIDAY_SERIES:
+        series, _ = _sanitize_multiday_series(None, replay_city[key])
+        multiday_raw[key] = series
+    return hourly_raw, multiday_raw
+
+
+def _build_replay_provenance(
+    replay_date: str, feat_name: str, loc_label: str, reason: str
+) -> dict[str, Any]:
+    """Assemble provenance metadata block for historical winter replay payloads."""
+    return {
+        "source": f"PRANA-AI Historical Winter Replay ({replay_date})",
+        "data_type": "historical_replay",
+        "retrieved_at": datetime.now(IST_TZ).isoformat(timespec="seconds"),
+        "is_stale": True,
+        "is_fallback_replay": True,
+        "is_partial_fallback": False,
+        "fallback_slots": 24,
+        "spatial_resolution": SPATIAL_RES_REPLAY,
+        "spatial_note": (
+            f"{reason}. Showing nearest regional historical winter replay "
+            f"({feat_name} proxy) for {loc_label} instead of live forecast."
+        ),
+    }
+
+
+def build_replay_payload(
     fallback_city_key: str,
     reason: str,
     **meta: Any,
@@ -399,31 +354,18 @@ def _build_replay_payload(
 
     resolved_city_key = meta.get("city_key") or fallback_city_key
     resolved_display = meta.get("city_display") or feat_meta["name"]
-    area_name = meta.get("area_name")
-    state = meta.get("state")
+    area_name, state = meta.get("area_name"), meta.get("state")
     use_lat = float(meta["lat"]) if meta.get("lat") is not None else float(feat_meta["lat"])
     use_lon = float(meta["lon"]) if meta.get("lon") is not None else float(feat_meta["lon"])
 
-    coastal = is_coastal_location(use_lat, use_lon, state=state, city_key=resolved_city_key)
     known_key = resolved_city_key if resolved_city_key in CONSTANTS["cities"] else None
-    sugg_lang = suggest_language_for_state(state, known_key)
-    met_note = build_meteorology_note(use_lat, coastal, city_key=known_key)
+    coastal = is_coastal_location(use_lat, use_lon, state=state, city_key=known_key)
     loc_label = (
         f"{resolved_display} ({area_name})"
         if area_name and area_name != resolved_display
         else resolved_display
     )
-
-    base_dt = datetime.strptime(replay_date, "%Y-%m-%d")
-    multi_times = [
-        (base_dt + timedelta(days=d)).strftime("%Y-%m-%d") + f"T{h:02d}:00"
-        for d in range(5)
-        for h in range(24)
-    ]
-    pm25_multi, _ = _sanitize_multiday_series(None, replay_city["pm2_5"])
-    pm10_multi, _ = _sanitize_multiday_series(None, replay_city["pm10"])
-    no2_multi, _ = _sanitize_multiday_series(None, replay_city["nitrogen_dioxide"])
-
+    hourly_raw, multiday_raw = _build_replay_series(replay_city, replay_date)
     return {
         "city": resolved_city_key,
         "city_display": resolved_display,
@@ -432,81 +374,70 @@ def _build_replay_payload(
         "lat": round(use_lat, 4),
         "lon": round(use_lon, 4),
         "is_coastal": coastal,
-        "suggested_language": sugg_lang,
-        "meteorology_note": met_note,
-        "hourly_raw": {
-            "time": [f"{replay_date}T{h:02d}:00" for h in range(24)],
-            "pm2_5": list(replay_city["pm2_5"]),
-            "pm10": list(replay_city["pm10"]),
-            "nitrogen_dioxide": list(replay_city["nitrogen_dioxide"]),
-            "us_aqi": list(replay_city["us_aqi"]),
-            "temperature_2m": list(replay_city["temperature_2m"]),
-            "relative_humidity_2m": list(replay_city["relative_humidity_2m"]),
-            "wind_speed_10m": list(replay_city["wind_speed_10m"]),
-            "boundary_layer_height": list(replay_city["boundary_layer_height"]),
-        },
-        "multiday_raw": {
-            "time": multi_times,
-            "pm2_5": pm25_multi,
-            "pm10": pm10_multi,
-            "nitrogen_dioxide": no2_multi,
-        },
-        "provenance": {
-            "source": f"PRANA-AI Historical Winter Replay ({replay_date})",
-            "data_type": "historical_replay",
-            "retrieved_at": datetime.now(IST_TZ).isoformat(timespec="seconds"),
-            "is_stale": True,
-            "is_fallback_replay": True,
-            "is_partial_fallback": False,
-            "fallback_slots": 24,
-            "spatial_resolution": SPATIAL_RES_REPLAY,
-            "spatial_note": (
-                f"{reason}. Showing nearest regional historical winter replay "
-                f"({feat_meta['name']} proxy) for {loc_label} instead of live forecast."
-            ),
-        },
+        "suggested_language": suggest_language_for_state(state, known_key),
+        "meteorology_note": build_meteorology_note(use_lat, coastal, city_key=known_key),
+        "hourly_raw": hourly_raw,
+        "multiday_raw": multiday_raw,
+        "provenance": _build_replay_provenance(replay_date, feat_meta["name"], loc_label, reason),
     }
+
+
+def _resolve_featured_city_loc(
+    city_key: str, coords: tuple[float | None, float | None], area_name: str | None
+) -> tuple[float, float, str, str, str | None]:
+    """Resolve coordinates and default sub-area label for a featured Indian city."""
+    lat, lon = coords
+    meta = CONSTANTS["cities"][city_key]
+    use_lat = float(lat) if lat is not None else float(meta["lat"])
+    use_lon = float(lon) if lon is not None else float(meta["lon"])
+    resolved_area = area_name or (
+        f"GPS ({use_lat:.3f}, {use_lon:.3f})" if lat is not None and lon is not None else None
+    )
+    return use_lat, use_lon, meta["name"], city_key, resolved_area
+
+
+async def _resolve_custom_city_loc(
+    city_clean: str,
+    coords: tuple[float | None, float | None],
+    hints: tuple[str | None, str | None],
+    http_client: httpx.AsyncClient | None,
+) -> tuple[float, float, str, str | None, str | None]:
+    """Resolve coordinates and state metadata for any non-featured Indian city."""
+    lat, lon = coords
+    area_name, state = hints
+    if lat is not None and lon is not None:
+        return float(lat), float(lon), area_name or city_clean.title(), state, area_name
+
+    geo = await geocode_india(city_clean, count=1, http_client=http_client)
+    if not geo:
+        raise ValueError(f"Could not find Indian location '{city_clean}'.")
+    top = geo[0]
+    resolved_state = state or top["state"] or None
+    return float(top["lat"]), float(top["lon"]), top["name"], resolved_state, area_name
 
 
 async def _resolve_location(
     city_clean: str,
-    lat: float | None,
-    lon: float | None,
-    area_name: str | None,
-    state: str | None,
+    coords: tuple[float | None, float | None],
+    hints: tuple[str | None, str | None],
     http_client: httpx.AsyncClient | None,
 ) -> dict[str, Any]:
     """Resolve city/coordinates/metadata for any Indian location."""
     city_key = city_clean.lower()
     if city_key in CONSTANTS["cities"]:
-        meta = CONSTANTS["cities"][city_key]
-        use_lat = float(lat) if lat is not None else float(meta["lat"])
-        use_lon = float(lon) if lon is not None else float(meta["lon"])
-        city_display = meta["name"]
-        fallback_key = city_key
-        resolved_area = area_name or (
-            f"GPS ({use_lat:.3f}, {use_lon:.3f})" if lat is not None and lon is not None else None
+        use_lat, use_lon, city_display, fallback_key, resolved_area = _resolve_featured_city_loc(
+            city_key, coords, hints[0]
         )
+        state = hints[1] or CONSTANTS["cities"][city_key].get("state")
+        known_key: str | None = city_key
     else:
-        if lat is None or lon is None:
-            geo = await geocode_india(city_clean, count=1, http_client=http_client)
-            if not geo:
-                raise ValueError(f"Could not find Indian location '{city_clean}'.")
-            top = geo[0]
-            use_lat = float(top["lat"])
-            use_lon = float(top["lon"])
-            city_display = top["name"]
-            state = state or top["state"] or None
-        else:
-            use_lat = float(lat)
-            use_lon = float(lon)
-            city_display = area_name or city_clean.title()
-
+        use_lat, use_lon, city_display, state, resolved_area = await _resolve_custom_city_loc(
+            city_clean, coords, hints, http_client
+        )
         fallback_key = nearest_featured_city(use_lat, use_lon)
-        resolved_area = area_name
+        known_key = None
 
-    coastal = is_coastal_location(use_lat, use_lon, state=state, city_key=city_key)
-    known_key = city_key if city_key in CONSTANTS["cities"] else None
+    coastal = is_coastal_location(use_lat, use_lon, state=state, city_key=known_key)
     return {
         "city_key": city_key,
         "city_display": city_display,
@@ -521,47 +452,46 @@ async def _resolve_location(
     }
 
 
-def _assemble_live_payload(
-    loc: dict[str, Any],
-    aq_json: dict[str, Any],
-    wx_json: dict[str, Any],
-) -> dict[str, Any]:
-    """Assemble and sanitize 24h + 5-day payload while tracking any fallback substitutions."""
-    times = aq_json.get("time") or wx_json.get("time")
-    if not times or len(times) < 24:
-        raise ValueError("Incomplete 24-hour Open-Meteo response")
-
+def _normalize_multiday_times(times: list[str]) -> list[str]:
+    """Return 120 ISO hourly timestamps (5 days) aligned with upstream day 0."""
     multi_times = list(times[:120])
     if len(multi_times) < 120 and multi_times:
         start_dt = datetime.strptime(multi_times[0][:10], "%Y-%m-%d")
-        multi_times = [
+        return [
             (start_dt + timedelta(days=d)).strftime("%Y-%m-%d") + f"T{h:02d}:00"
             for d in range(5)
             for h in range(24)
         ]
+    return multi_times
 
-    replay_city = FALLBACK_REPLAY["cities"][loc["fallback_key"]]
-    pm25_24, c1 = _sanitize_series(aq_json.get("pm2_5"), replay_city["pm2_5"])
-    pm10_24, c2 = _sanitize_series(aq_json.get("pm10"), replay_city["pm10"])
-    no2_24, c3 = _sanitize_series(aq_json.get("nitrogen_dioxide"), replay_city["nitrogen_dioxide"])
-    us_24, c4 = _sanitize_series(aq_json.get("us_aqi"), replay_city["us_aqi"], as_int=True)
-    temp_24, c5 = _sanitize_series(wx_json.get("temperature_2m"), replay_city["temperature_2m"])
-    rh_24, c6 = _sanitize_series(
-        wx_json.get("relative_humidity_2m"), replay_city["relative_humidity_2m"]
-    )
-    wind_24, c7 = _sanitize_series(wx_json.get("wind_speed_10m"), replay_city["wind_speed_10m"])
-    pblh_24, c8 = _sanitize_series(
-        wx_json.get("boundary_layer_height"), replay_city["boundary_layer_height"]
-    )
 
-    pm25_120, m1 = _sanitize_multiday_series(aq_json.get("pm2_5"), replay_city["pm2_5"])
-    pm10_120, m2 = _sanitize_multiday_series(aq_json.get("pm10"), replay_city["pm10"])
-    no2_120, m3 = _sanitize_multiday_series(
-        aq_json.get("nitrogen_dioxide"), replay_city["nitrogen_dioxide"]
-    )
-    fallback_slots = c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + m1 + m2 + m3
+def _collect_sanitized_series(
+    aq_json: dict[str, Any], wx_json: dict[str, Any], replay_city: dict[str, Any]
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]], int]:
+    """Sanitize 24h AQ/weather arrays and 120h multiday AQ arrays while counting fallback slots."""
+    hourly_out: dict[str, list[Any]] = {}
+    multi_out: dict[str, list[Any]] = {}
+    fallback_slots = 0
+
+    for key, as_int in _LIVE_AQ_SERIES:
+        series, count = _sanitize_series(aq_json.get(key), replay_city[key], as_int=as_int)
+        hourly_out[key] = series
+        fallback_slots += count
+    for key in _LIVE_WX_SERIES:
+        series, count = _sanitize_series(wx_json.get(key), replay_city[key])
+        hourly_out[key] = series
+        fallback_slots += count
+    for key in _MULTIDAY_SERIES:
+        series, count = _sanitize_multiday_series(aq_json.get(key), replay_city[key])
+        multi_out[key] = series
+        fallback_slots += count
+
+    return hourly_out, multi_out, fallback_slots
+
+
+def _build_live_provenance(loc: dict[str, Any], fallback_slots: int) -> dict[str, Any]:
+    """Assemble provenance dictionary for live or partially-interpolated Open-Meteo payloads."""
     is_partial = fallback_slots > 0
-
     loc_parts = [p for p in (loc["area_name"], loc["city_display"], loc["state"]) if p]
     loc_desc = ", ".join(dict.fromkeys(loc_parts))
     base_note = (
@@ -578,7 +508,36 @@ def _assemble_live_payload(
         source_lbl = "Open-Meteo (CAMS Global ~40 km + Weather Forecast)"
         data_type = "model_forecast"
         spatial_note = base_note
+    return {
+        "source": source_lbl,
+        "data_type": data_type,
+        "retrieved_at": datetime.now(IST_TZ).isoformat(timespec="seconds"),
+        "is_stale": False,
+        "is_fallback_replay": False,
+        "is_partial_fallback": is_partial,
+        "fallback_slots": fallback_slots,
+        "spatial_resolution": SPATIAL_RES_LIVE,
+        "spatial_note": spatial_note,
+    }
 
+
+def _assemble_live_payload(
+    loc: dict[str, Any],
+    aq_json: dict[str, Any],
+    wx_json: dict[str, Any],
+) -> dict[str, Any]:
+    """Assemble and sanitize 24h + 5-day payload while checking AQ/weather hour alignment."""
+    aq_times = aq_json.get("time") or []
+    wx_times = wx_json.get("time") or []
+    if len(aq_times) < 24 or len(wx_times) < 24:
+        raise ValueError("Incomplete 24-hour Open-Meteo response")
+    if aq_times[:24] != wx_times[:24]:
+        raise ValueError("Mismatched Open-Meteo air-quality and weather timestamps")
+
+    replay_city = FALLBACK_REPLAY["cities"][loc["fallback_key"]]
+    hourly_series, multi_series, fallback_slots = _collect_sanitized_series(
+        aq_json, wx_json, replay_city
+    )
     return {
         "city": loc["city_key"],
         "city_display": loc["city_display"],
@@ -589,40 +548,21 @@ def _assemble_live_payload(
         "is_coastal": loc["coastal"],
         "suggested_language": loc["suggested_language"],
         "meteorology_note": loc["meteorology_note"],
-        "hourly_raw": {
-            "time": times[:24],
-            "pm2_5": pm25_24,
-            "pm10": pm10_24,
-            "nitrogen_dioxide": no2_24,
-            "us_aqi": us_24,
-            "temperature_2m": temp_24,
-            "relative_humidity_2m": rh_24,
-            "wind_speed_10m": wind_24,
-            "boundary_layer_height": pblh_24,
-        },
-        "multiday_raw": {
-            "time": multi_times,
-            "pm2_5": pm25_120,
-            "pm10": pm10_120,
-            "nitrogen_dioxide": no2_120,
-        },
-        "provenance": {
-            "source": source_lbl,
-            "data_type": data_type,
-            "retrieved_at": datetime.now(IST_TZ).isoformat(timespec="seconds"),
-            "is_stale": False,
-            "is_fallback_replay": False,
-            "is_partial_fallback": is_partial,
-            "fallback_slots": fallback_slots,
-            "spatial_resolution": SPATIAL_RES_LIVE,
-            "spatial_note": spatial_note,
-        },
+        "hourly_raw": {"time": aq_times[:24], **hourly_series},
+        "multiday_raw": {"time": _normalize_multiday_times(aq_times), **multi_series},
+        "provenance": _build_live_provenance(loc, fallback_slots),
     }
 
 
 def _apply_loc_metadata(payload: dict[str, Any], loc: dict[str, Any]) -> dict[str, Any]:
-    """Attach caller location metadata onto a cached payload copy."""
+    """Attach caller location metadata and caller-specific provenance note onto cache copy."""
     copy_payload = dict(payload)
+    orig_prov = dict(payload.get("provenance") or {})
+    rebuilt_prov = _build_live_provenance(loc, int(orig_prov.get("fallback_slots", 0)))
+    rebuilt_prov["retrieved_at"] = orig_prov.get("retrieved_at", rebuilt_prov["retrieved_at"])
+    rebuilt_prov["is_stale"] = bool(orig_prov.get("is_stale", False))
+    rebuilt_prov["is_fallback_replay"] = bool(orig_prov.get("is_fallback_replay", False))
+
     copy_payload["city"] = loc["city_key"]
     copy_payload["city_display"] = loc["city_display"]
     copy_payload["area_name"] = loc["area_name"]
@@ -630,10 +570,86 @@ def _apply_loc_metadata(payload: dict[str, Any], loc: dict[str, Any]) -> dict[st
     copy_payload["is_coastal"] = loc["coastal"]
     copy_payload["suggested_language"] = loc["suggested_language"]
     copy_payload["meteorology_note"] = loc["meteorology_note"]
+    copy_payload["provenance"] = rebuilt_prov
     return copy_payload
 
 
-async def fetch_city_atmospheric_data(
+async def _gather_pair_cancelling(
+    aq_params: dict[str, Any],
+    wx_params: dict[str, Any],
+    client: httpx.AsyncClient,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run AQ and Weather fetches concurrently, cancelling and awaiting sibling on failure."""
+    aq_task = asyncio.create_task(_fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=client))
+    wx_task = asyncio.create_task(_fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=client))
+    try:
+        aq_res, wx_res = await asyncio.gather(aq_task, wx_task)
+        return aq_res, wx_res
+    except BaseException:
+        for task in (aq_task, wx_task):
+            if not task.done():
+                task.cancel()
+        with suppress(BaseException):
+            await asyncio.gather(aq_task, wx_task, return_exceptions=True)
+        raise
+
+
+async def _fetch_om_pair(
+    lat: float, lon: float, http_client: httpx.AsyncClient | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fetch Open-Meteo Air Quality and Weather JSON concurrently over an explicit IST range."""
+    start_dt = datetime.now(IST_TZ).date()
+    end_dt = start_dt + timedelta(days=4)
+    date_bounds = {
+        "start_date": start_dt.strftime("%Y-%m-%d"),
+        "end_date": end_dt.strftime("%Y-%m-%d"),
+        "timezone": "Asia/Kolkata",
+    }
+    aq_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "pm2_5,pm10,nitrogen_dioxide,us_aqi",
+        **date_bounds,
+    }
+    wx_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,boundary_layer_height",
+        **date_bounds,
+    }
+    if http_client is not None:
+        return await _gather_pair_cancelling(aq_params, wx_params, http_client)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.5)) as shared_client:
+        return await _gather_pair_cancelling(aq_params, wx_params, shared_client)
+
+
+def _handle_live_fetch_error(exc: Exception, cache_key: str, loc: dict[str, Any]) -> dict[str, Any]:
+    """Re-check cache on error and degrade gracefully to same-day stale cache or replay."""
+    logger.warning("Open-Meteo upstream error (%s); serving fallback.", type(exc).__name__)
+    _, cached_entry = _get_cached_entry(cache_key)
+    if cached_entry:
+        stale_payload = _apply_loc_metadata(cached_entry, loc)
+        stale_payload["provenance"] = {
+            **stale_payload["provenance"],
+            "is_stale": True,
+            "spatial_note": (
+                f"Live API unavailable ({type(exc).__name__}); serving cached forecast."
+            ),
+        }
+        return stale_payload
+    return build_replay_payload(
+        loc["fallback_key"],
+        f"Live Open-Meteo fetch unavailable ({type(exc).__name__})",
+        city_key=loc["city_key"],
+        city_display=loc["city_display"],
+        lat=loc["lat"],
+        lon=loc["lon"],
+        area_name=loc["area_name"],
+        state=loc["state"],
+    )
+
+
+async def fetch_city_atmospheric_data(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     city: str = "delhi",
     simulate_stale: bool = False,
     lat: float | None = None,
@@ -643,11 +659,11 @@ async def fetch_city_atmospheric_data(
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Fetch 24h air quality and meteorology from Open-Meteo for any Indian coordinates."""
-    city_clean = city.strip() or "delhi"
-    loc = await _resolve_location(city_clean, lat, lon, area_name, state, http_client)
-
+    loc = await _resolve_location(
+        city.strip() or "delhi", (lat, lon), (area_name, state), http_client
+    )
     if simulate_stale:
-        return _build_replay_payload(
+        return build_replay_payload(
             loc["fallback_key"],
             "Stale/Offline simulation enabled",
             city_key=loc["city_key"],
@@ -663,55 +679,10 @@ async def fetch_city_atmospheric_data(
     if is_fresh and cached_entry:
         return _apply_loc_metadata(cached_entry, loc)
 
-    aq_params = {
-        "latitude": loc["lat"],
-        "longitude": loc["lon"],
-        "hourly": "pm2_5,pm10,nitrogen_dioxide,us_aqi",
-        "timezone": "Asia/Kolkata",
-        "forecast_days": 5,
-    }
-    wx_params = {
-        "latitude": loc["lat"],
-        "longitude": loc["lon"],
-        "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,boundary_layer_height",
-        "timezone": "Asia/Kolkata",
-        "forecast_days": 5,
-    }
-
     try:
-        if http_client is not None:
-            aq_raw, wx_raw = await asyncio.gather(
-                _fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=http_client),
-                _fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=http_client),
-            )
-        else:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.5)) as shared_client:
-                aq_raw, wx_raw = await asyncio.gather(
-                    _fetch_json(OPEN_METEO_AQ_URL, aq_params, http_client=shared_client),
-                    _fetch_json(OPEN_METEO_WX_URL, wx_params, http_client=shared_client),
-                )
+        aq_raw, wx_raw = await _fetch_om_pair(loc["lat"], loc["lon"], http_client)
         payload = _assemble_live_payload(loc, aq_raw.get("hourly", {}), wx_raw.get("hourly", {}))
         _prune_and_store_cache(cache_key, payload)
         return payload
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        logger.warning("Open-Meteo upstream error (%s); serving fallback.", type(exc).__name__)
-        if cached_entry:
-            stale_payload = _apply_loc_metadata(cached_entry, loc)
-            stale_payload["provenance"] = {
-                **stale_payload["provenance"],
-                "is_stale": True,
-                "spatial_note": (
-                    f"Live API unavailable ({type(exc).__name__}); serving cached forecast."
-                ),
-            }
-            return stale_payload
-        return _build_replay_payload(
-            loc["fallback_key"],
-            f"Live Open-Meteo fetch unavailable ({type(exc).__name__})",
-            city_key=loc["city_key"],
-            city_display=loc["city_display"],
-            lat=loc["lat"],
-            lon=loc["lon"],
-            area_name=loc["area_name"],
-            state=loc["state"],
-        )
+        return _handle_live_fetch_error(exc, cache_key, loc)

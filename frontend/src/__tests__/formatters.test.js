@@ -12,12 +12,14 @@ describe("formatters", () => {
     expect(formatHour(9)).toBe("09:00");
     expect(formatHour(25)).toBe("01:00");
     expect(formatHour(null)).toBe("--:--");
+    expect(formatHour("abc")).toBe("--:--");
 
     expect(formatHourAmPm(0)).toBe("12:00 AM");
     expect(formatHourAmPm(8)).toBe("8:00 AM");
     expect(formatHourAmPm(12)).toBe("12:00 PM");
     expect(formatHourAmPm(17)).toBe("5:00 PM");
     expect(formatHourAmPm(undefined)).toBe("--");
+    expect(formatHourAmPm("bad")).toBe("--");
   });
 
   it("maps CPCB NAQI categories to expected Tailwind badge styles", () => {

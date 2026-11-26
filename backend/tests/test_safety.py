@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import pytest
 
-from data_fetcher import PRESETS, _build_replay_payload, clear_cache, fetch_city_atmospheric_data
+from data_fetcher import PRESETS, build_replay_payload, clear_cache, fetch_city_atmospheric_data
 from engine import build_evidence_bundle
-from safety import check_medical_emergency, validate_narrative
+from safety import (
+    check_medical_emergency,
+    sign_evidence_bundle,
+    validate_narrative,
+    verify_evidence_bundle,
+)
 from schemas import PlanRequest
 
 
@@ -80,7 +86,7 @@ def test_numeric_category_binding_and_policy_validator() -> None:
     """Verify validator rejects cross-metric confusion, hallucinated %, safe claims, and plants."""
     delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
     req = PlanRequest(**delhi_preset, simulate_stale=True)
-    raw = _build_replay_payload("delhi", "test")
+    raw = build_replay_payload("delhi", "test")
     bundle = build_evidence_bundle(req, raw, current_hour=8)
 
     valid_text = (
@@ -96,22 +102,18 @@ def test_numeric_category_binding_and_policy_validator() -> None:
 
     # Cross-metric leakage: 2400 is valid for g CO2e, NEVER valid for ug/m3 PM2.5
     cross_metric_text = (
-        "Live data unavailable (historical replay). "
-        "Today PM2.5 is 2400 ug/m3 indoors."
+        "Live data unavailable (historical replay). Today PM2.5 is 2400 ug/m3 indoors."
     )
     ok_cross, reasons_cross = validate_narrative(cross_metric_text, bundle)
     assert ok_cross is False
     assert reasons_cross
 
     # Hallucinated percentage must fail
-    bad_pct = (
-        "Live data unavailable (historical replay). "
-        "You will reduce exposure by 99% today."
-    )
+    bad_pct = "Live data unavailable (historical replay). You will reduce exposure by 99% today."
     ok_pct, _ = validate_narrative(bad_pct, bundle)
     assert ok_pct is False
 
-    # Banned "safe window" and houseplant claims must fail
+    # Banned "safe window" and affirmative houseplant claims (even with later negation clause)
     ok_safe, _ = validate_narrative(
         "Live data unavailable (replay). 2 PM is a safe window.", bundle
     )
@@ -120,3 +122,52 @@ def test_numeric_category_binding_and_policy_validator() -> None:
         "Live data unavailable (replay). Buy a snake plant for PM2.5.", bundle
     )
     assert ok_plant is False
+    ok_mixed_clause, _ = validate_narrative(
+        "Live data unavailable (replay). Buy a snake plant; avoid dry sweeping.", bundle
+    )
+    assert ok_mixed_clause is False
+
+
+def test_hmac_bundle_signing_and_key_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify HMAC signing/tamper detection and zero coupling to GEMINI_API_KEY or deploy IDs."""
+    monkeypatch.setenv("PRANA_BUNDLE_SECRET", "unit-test-hmac-secret-key")
+    preset = PRESETS[0]
+    bundle = build_evidence_bundle(
+        PlanRequest(**preset), build_replay_payload(preset["city"], "test"), current_hour=9
+    )
+
+    sig = sign_evidence_bundle(bundle)
+    assert len(sig) == 64
+    assert verify_evidence_bundle(bundle, sig) is True
+
+    # Any tampered field or invalid/missing signature must fail verification
+    tampered_city = bundle.model_copy(update={"city": "tampered_city"})
+    tampered_air = bundle.model_copy(
+        update={
+            "air_snapshot": bundle.air_snapshot.model_copy(update={"current_pm25": 1.0}),
+        }
+    )
+    assert verify_evidence_bundle(tampered_city, sig) is False
+    assert verify_evidence_bundle(tampered_air, sig) is False
+    assert verify_evidence_bundle(bundle, "") is False
+    assert verify_evidence_bundle(bundle, "0" * 64) is False
+
+    # Rotating GEMINI_API_KEY must NEVER change HMAC bundle signatures,
+    # and deployed envs without PRANA_BUNDLE_SECRET must fail loudly rather than use deploy IDs.
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-one")
+    sig_one = sign_evidence_bundle(bundle)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-two")
+    sig_two = sign_evidence_bundle(bundle)
+    assert sig_one == sig_two
+
+    monkeypatch.delenv("PRANA_BUNDLE_SECRET", raising=False)
+    monkeypatch.setenv("VERCEL_ENV", "production")
+    monkeypatch.setenv("VERCEL_PROJECT_ID", "prj_public_123")
+    with pytest.raises(RuntimeError, match="PRANA_BUNDLE_SECRET"):
+        sign_evidence_bundle(bundle)
+    monkeypatch.delenv("VERCEL_ENV", raising=False)
+    # Local ephemeral fallback remains stable in-process while GEMINI_API_KEY changes.
+    sig_local_1 = sign_evidence_bundle(bundle)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-three")
+    sig_local_2 = sign_evidence_bundle(bundle)
+    assert sig_local_1 == sig_local_2

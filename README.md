@@ -1,49 +1,38 @@
 # PRANA-AI — Neuro-Symbolic Household Smog & Exposure Planner
 
-**Track:** Google for Developers PromptWars Virtual — Challenge 06 (Urban Air Quality Assistant)
+**Track:** Google for Developers PromptWars Virtual — Challenge 06 (**Urban Air Quality Assistant**)
 
-PRANA-AI converts raw Pan-India air-quality forecasts into constraint-aware daily household schedules, room ventilation guidance, and verified commute savings. Its core design principle is a **strict Neuro-Symbolic split**: **Python owns 100% of CPCB breakpoint math, boundary-layer meteorology, USEPA dosimetry, Sanctuary room scoring, and ARAI emission math**, packing results into an immutable `EvidenceBundle`; **Google Gemini only translates and explains** (or inspects room photos via Gemini Vision), guarded by a post-generation metric-bound numeric validator, multi-key `429/404/503/504` failover, and a deterministic fallback engine.
+> **Turn city smog numbers into honest, constraint-aware daily schedules, indoor shelter plans, and verified travel savings across 8 Indian languages — without LLM math hallucinations.**
 
----
+| Live Web App | Demo Video (2m 30s) | Health Check |
+| :--- | :--- | :--- |
+| **[prana-ai-promptwars.vercel.app](https://prana-ai-promptwars.vercel.app/)** | **[Watch Walkthrough on Google Drive](https://drive.google.com/file/d/19EsjzZ44RImpyeHIlbGk8uoRgqjRx6Ag/view?usp=drivesdk)** _(no sign-in)_ | `GET` / `HEAD` `/health` -> `200 OK` |
 
-## Live Deployment & 5-Minute Keep-Warm Setup
-
-- **Live Web App URL:** https://prana-ai-promptwars.vercel.app/ _(deploy ready via [`vercel.json`](vercel.json) full-stack routing and [`render.yaml`](render.yaml) backup; set `VITE_API_BASE_URL` and `ALLOWED_ORIGINS` if hosting backend/frontend separately)_
-- **Backend Health Endpoint:** `GET /health` and `HEAD /health` -> `200 OK` (`{"status":"ok","app":"PRANA-AI","version":"1.0.0"}`)
-- **Free 5-Minute Keep-Warm Ping (Prevents Cold Starts):**
-  1. **UptimeRobot (Recommended Free Tier):** Add an **HTTP(s)** monitor pointing to `https://<your-backend-domain>/health` with interval **5 minutes** (`HEAD` or `GET`—both are explicitly supported on `@app.api_route("/health", methods=["GET", "HEAD"])`).
-  2. **Backup GitHub Actions Cron:** Included in [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) running every `*/5 * * * *`; simply add `PRANA_HEALTH_URL` under repository Settings -> Secrets -> Actions.
-
-## Demo Video
-
-Watch the 2 minute 30 second demo video: [PRANA-AI Demo Video](https://drive.google.com/file/d/19EsjzZ44RImpyeHIlbGk8uoRgqjRx6Ag/view?usp=drivesdk) (Google Drive, no sign in needed). It shows the live app, a code walkthrough of the key parts, the challenges faced, and how Google Antigravity and Gemini helped build it.
+**Quick Navigation:** [Problem & Solution](#problem-solution-and-impact) • [Key Features](#key-features) • [Screenshots](#screenshots) • [Architecture](#architecture-overview) • [Project Structure](#project-structure-and-tech-stack) • [Setup & Tests](#installation-execution-and-testing) • [Quality Evidence](#engineering-quality-and-verification-evidence) • [Methodology & Safety](#scientific-methodology-and-safety-boundaries)
 
 ---
 
-## Neuro-Symbolic Architecture
+## Problem, Solution, and Impact
 
-```mermaid
-flowchart LR
-    UI["React + Tailwind PWA<br/>Voice TTS/STT, Photo Audit, Offline SW"] --> API["FastAPI REST Layer<br/>/v1/air, /v1/plan, /v1/chat, /v1/audit-room"]
-    API --> Triage["safety.py<br/>ER Symptom Intercept (108/112)"]
-    API --> Fetch["data_fetcher.py<br/>Open-Meteo CAMS Global ~40 km + Weather Forecast<br/>15-min Bounded LRU TTL Cache + Historical Replay"]
-    Fetch --> Eng["engine.py facade<br/>(air_quality, exposure, indoor)<br/>Est. Hourly India AQI, Golden Window, Dose &amp; CO2e"]
-    Eng --> Bundle["Immutable EvidenceBundle<br/>+ HMAC-SHA256 Signature &amp; Metric Pools"]
-    Bundle --> LLM["explainer.py<br/>Gemini Text &amp; Vision Failover<br/>Key Rotation (429/404/503/504) + Timeout"]
-    LLM --> Val["safety.py<br/>Category-Bound Numeric &amp; Claim Validator"]
-    Val -- "Pass" --> API
-    Val -- "Reject / Timeout / Outage" --> Offline["Deterministic Fallback Engine<br/>(8-Language Plan &amp; Room Templates; EN/Hinglish Chat Topics)"]
-    Offline --> API
-```
+### Why Generic AQI Apps Fail Families in India
+Most consumer air-quality apps only report a single raw AQI number or tell everyone to *"just stay home"*—advice that breaks down when children have morning school buses, seniors need respiratory protection thresholds early, and delivery riders work fixed 4–8 hour road shifts. Worse, feeding raw numbers directly to an LLM risks **invented concentrations, mixed-up $\text{PM}_{2.5}$ vs. AQI scales, missed indoor sources (tadka, agarbatti), and misleading "safe window" advice** during flat winter inversions.
 
-### Key Production Highlights
+### Our Neuro-Symbolic Solution & Real-World Impact
+PRANA-AI enforces a strict **Neuro-Symbolic architecture**:
+- **Symbolic Python (`engine.py` facade) owns 100% of the math:** Hourly India CPCB NAQI sub-indices, boundary-layer (`PBLH`) diurnal Golden Windows with a `<15%` flat-curve honesty rule, hourly-integrated USEPA inhaled lung-dose proxies (`Breathe Less`), Clean Air Sanctuary room scoring (`0–100`), and ARAI/WRI commute emissions (`Emit Less`) are packed into an HMAC-SHA256-signed `EvidenceBundle`.
+- **Google Gemini only translates, explains & visually audits rooms:** Reads precomputed server JSON (zero arithmetic in the LLM), translates into **8 Indian languages** (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`), and evaluates room photos for practical **Rs 0–Rs 500** fixes. A post-generation validator catches any ungrounded numbers or banned claims (e.g., recommending houseplants for $\text{PM}_{2.5}$) and seamlessly falls back to a **Deterministic Fallback Engine** so the app never crashes—even offline or without an API key.
 
-1. **Neuro-Symbolic Split & HMAC Bundle Verification (Zero Math Hallucinations):** Every concentration (`ug/m3`), Estimated Hourly India NAQI sub-index, Golden Window interval, hourly-integrated inhaled dose (`ug`), cigarette equivalent, and `CO2e` saving is calculated deterministically in Python (`backend/air_quality.py`, `backend/exposure.py`, `backend/indoor.py`, orchestrated by `backend/engine.py`). `/v1/plan` signs every returned `EvidenceBundle` with HMAC-SHA256 (`evidence_signature`), and `/v1/chat` rejects tampered or unsigned bundles with HTTP `403`. Any LLM response that invents ungrounded metrics/percentages, swaps categories, calls polluted air `"safe"`, or recommends houseplants for PM2.5 is rejected by `safety.validate_narrative` and replaced seamlessly by a grounded deterministic template.
-2. **Hard Medical Emergency Triage (`backend/safety.py`):** Queries mentioning acute distress (`wheezing`, `can't breathe`, `difficulty breathing`, `chest pain`, `blue lips`, `asthma attack`, `saans nahi`, plus Hindi/Gujarati/Bengali/Tamil/Telugu distress phrases) are intercepted **before rate limiting and before any LLM call** to trigger an urgent ER banner with tappable `108 / 112` links.
-3. **Resilient `429 / 404 / 503 / 504` Key & Model Failover (`backend/explainer.py`):** Supports `GEMINI_API_KEY`, `GEMINI_API_KEY_BACKUP`, and comma-separated `GEMINI_API_KEYS`. Rotates immediately to the next key on `429 RESOURCE_EXHAUSTED` (with a 45s key cooldown), skips `404` unavailable models across `("gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")` (600s cache), enforces a `10s` SDK HTTP timeout plus an `8.0s` per-call `asyncio.wait_for` cap, reuses pooled HTTP clients (`_CLIENT_CACHE`), and degrades cleanly to the **Deterministic Fallback Engine**.
-4. **Simulate Stale Data & Explicit Partial Provenance (`backend/data_fetcher.py`):** Upstream API failures serve stale LRU cache when available or fall back cleanly with explicit `is_partial_fallback` and `fallback_slots` tracking so forecast gaps never masquerade silently as pure live readings. Judges can test full offline replay via **Data & Judge Mode -> Simulate Stale Data**.
-5. **Multilingual & Consumer Features:** Pan-India geocoding (`/v1/geocode`), GPS reverse geocoding (`/v1/reverse-geocode`), Hour-by-Hour Breathability Strip + 5-Day Outlook, Web Speech `Listen` / `Voice Ask`, Gemini Vision Room IAQ Audit (`POST /v1/audit-room`, `₹0–₹500` fixes with EXIF metadata stripped cleanly before upload), 1-click School/Office Clean-Air Note generator, WhatsApp plan share, keyboard-accessible modals and WAI-ARIA tab controls (`eslint-plugin-jsx-a11y` checked), and installable iOS/Android PWA support.
-   - **8-Language Scope:** Gemini-generated daily briefs, interactive chat replies, and Room IAQ photo audits support all **8 languages** (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`). Deterministic fallback daily plans and fallback room-audit tips also render in all 8 languages, while offline deterministic chat uses English/Hinglish topic routing when Gemini is unavailable.
+---
+
+## Key Features
+
+- **4 Real-World Vulnerability Profiles & Custom Household Builder:** Switch between `Students & Kids`, `Seniors`, `Delivery Riders`, and `Adults & Commuters` (or customize members including infants age `0+`, rooms, and fixed vs. flexible schedules). Profile alerts adapt deterministically (`Est. NAQI > 100` for sensitive/road-shift profiles vs. `> 150` for adults).
+- **Dynamic Golden Window & 5-Day Outlook (`<15%` Flat-Curve Honesty Rule):** Detects the cleanest daytime 2-hour window against morning inversion peaks across today's 24h forecast and all 5 outlook days, refuses to label stagnant winter pollution `"safe"`, and keeps fixed shifts protected with N95/route harm reduction.
+- **Pre-LLM Medical Emergency Triage (`108 / 112`):** Queries mentioning acute distress (`wheezing`, `can't breathe`, `difficulty breathing`, `chest pain`, `blue lips`, `asthma attack`, `saans nahi`, plus Hindi/Gujarati/Bengali/Tamil/Telugu phrases) short-circuit **before rate limiting and before any LLM call** to surface an ER alert with tappable `108 / 112` dial links.
+- **Separated Dual Impact Ledgers + Show-Math Audit:** Strictly decouples personal **Breathe Less** inhaled dose avoided ($\mu\text{g}$ & Berkeley Earth cigarette equivalents) from **Emit Less** transport savings ($\text{CO}_2\text{e}$ & tailpipe $\text{PM}_{2.5}$), with a transparent **Show Math** formula substitution modal.
+- **Gemini Vision Room IAQ Photo Audit (`POST /v1/audit-room`):** Analyzes room/kitchen photos for window/door gaps, exhaust placement, and dust traps, returning 3 actionable **Rs 0–Rs 500** steps (5 MB streaming cap, JPG/PNG/WebP check, decompression-bomb guard, EXIF metadata stripped cleanly).
+- **Pan-India Live Data, GPS & Offline Historical Replay:** Combines live Open-Meteo `~40 km` CAMS Global + weather forecasts, `/v1/geocode`, `/v1/reverse-geocode`, bounded `15-min` LRU caching, explicit `is_partial_fallback` provenance, and **Data & Judge Mode -> Simulate Stale Data**.
+- **Accessible Daily Tools:** Web Speech **Listen / Voice Ask**, 1-click School/Office **Clean-Air Note** generator, WhatsApp plan summary sharing, keyboard-accessible WAI-ARIA `tablist` navigation, and installable iOS/Android PWA support.
 
 ---
 
@@ -55,131 +44,155 @@ flowchart LR
 
 ---
 
-## Exact Deterministic Mathematical Formulas
+## Architecture Overview
 
-All formulas and coefficients are externalized in [`backend/data/constants.json`](backend/data/constants.json) and computed in [`backend/air_quality.py`](backend/air_quality.py), [`backend/exposure.py`](backend/exposure.py), and [`backend/indoor.py`](backend/indoor.py) via the [`backend/engine.py`](backend/engine.py) façade:
+```mermaid
+flowchart LR
+    UI["React + Tailwind PWA<br/>Voice TTS/STT, Photo Audit, Offline SW"] --> API["FastAPI REST Layer<br/>/v1/air, /v1/plan, /v1/chat, /v1/audit-room"]
+    API --> Triage["safety.py<br/>ER Symptom Intercept (108/112)"]
+    API --> Fetch["data_fetcher.py<br/>Open-Meteo CAMS Global ~40 km + Weather Forecast<br/>15-min Bounded LRU TTL Cache + Historical Replay"]
+    Fetch --> Eng["engine.py facade<br/>(air_quality, exposure, indoor, emissions)<br/>Est. Hourly India AQI, Golden Window, Dose &amp; CO2e"]
+    Eng --> Bundle["Immutable EvidenceBundle<br/>+ HMAC-SHA256 Signature &amp; Metric Pools"]
+    Bundle --> LLM["explainer.py &amp; gemini_client.py<br/>Gemini Text &amp; Vision Failover (429/404/503/504)"]
+    LLM --> Val["safety.py<br/>Category-Bound Numeric &amp; Claim Validator"]
+    Val -- "Pass" --> API
+    Val -- "Reject / Timeout / Outage" --> Offline["fallbacks.py<br/>Deterministic Engine (8-Lang Plans &amp; Room Tips)"]
+    Offline --> API
+```
 
-### 1. Estimated Hourly India CPCB NAQI Sub-Index (`compute_cpcb_subindex`, `compute_hourly_naqi`)
-
-For pollutant $p \in \{\text{PM}_{2.5}, \text{PM}_{10}, \text{NO}_2\}$ at concentration $C$:
-
-$$
-I_p = \text{round}\!\left(\frac{I_{\text{hi}} - I_{\text{lo}}}{C_{\text{hi}} - C_{\text{lo}}}(C - C_{\text{lo}}) + I_{\text{lo}}\right), \qquad \text{Est. NAQI} = \max\!\big(I_{\text{PM}_{2.5}},\, I_{\text{PM}_{10}},\, I_{\text{NO}_2}\big)
-$$
-
-Continuous interval bridging smoothly interpolates between integer CPCB breakpoint boundaries (e.g., `30.0 < C < 31.0`), capped at `500`. Note: Official CPCB NAQI is a 24-hour running station average; PRANA-AI applies CPCB concentration breakpoints hour-by-hour for actionable scheduling.
-
-### 2. Dynamic Golden Window & `<15%` Flat-Curve Honesty Rule (`find_golden_window`, `build_daily_outlook`)
-
-Scans daytime sliding pairs $h \in \{7, \dots, 17\}$ for $\min \frac{\text{PM}_{2.5}(h) + \text{PM}_{2.5}(h+1)}{2}$ and compares against morning peak $P_{\text{am}} = \max_{h \in \{6..9\}} \text{PM}_{2.5}(h)$ across both today's 24h curve and all 5 outlook days:
-
-$$
-\text{Reduction \%} = \frac{P_{\text{am}} - \overline{\text{PM}}_{2.5,\,\text{2h}}}{P_{\text{am}}} \times 100
-$$
-
-- If `Est. NAQI <= 100` across the day -> classified as `is_clean_air_day`.
-- Otherwise, `has_meaningful_window = True` **only if** $\text{Reduction} \ge 15\%$. When winter inversion stays flat (`<15%` dip), flexible strenuous activities for sensitive members are moved indoors instead of falsely cheering a minor dip.
-
-### 3. Ledger 1 — Hourly-Integrated USEPA Inhaled Dose Proxy (`Breathe Less`)
-
-Multi-hour shifts (such as 4h delivery blocks) integrate hour-by-hour across every occupied hourly concentration $C_{\text{out}}(h)$:
-
-$$
-D\,(\mu\text{g}) = \sum_{h} C_{\text{out}}(h) \times \kappa_{\text{microenv}} \times V_E \times \Delta t_h\,(\text{hr}) \times (1 - \eta_{\text{mask}})
-$$
-
-$$
-\text{Cigarettes Avoided} = \frac{D_{\text{baseline}} - D_{\text{optimized}}}{330.0\,\mu\text{g}}
-$$
-
-- **Ventilation Rate $V_E$ ($\text{m}^3/\text{hr}$):** `sleep=0.45`, `seated=0.55`, `light_walk=1.25`, `elderly_walk=1.30`, `child_play=1.35`, `brisk_walk=1.60`, `running_or_outdoor_work=2.70`
-- **Microenvironment Factor $\kappa$:** `open_road_2w_auto=1.55`, `walk_sidewalk=1.15`, `bus_non_ac=1.15`, `indoor_open=0.85`, `car_ac_recirc=0.80`, `electric_metro=0.55`, `indoor_shut=0.50`, `indoor_sealed=0.28`
-- **Mask Efficiency $\eta$:** `none=0.00`, `cloth=0.20`, `surgical=0.35`, `n95=0.80`
-
-### 4. Clean Air Sanctuary Room Scoring (`score_sanctuary`)
-
-$$
-\text{Room Score} = \text{clamp}_{[0,\,100]}\!\left(100 - 15 \cdot N_{\text{ext\_windows}} - 25 \cdot \mathbb{1}_{\text{road\_facing}} - 25 \cdot \mathbb{1}_{\text{kitchen\_adjacent}} - 10 \cdot \mathbb{1}_{\text{large\_volume}}\right)
-$$
-
-Timed exterior window opening (`timed_open`) is recommended **only** when the daytime minimum outdoor $\text{PM}_{2.5} \le \min(90\,\mu\text{g/m}^3,\, \text{modeled indoor baseline})$. Above that threshold (`keep_shut_exhaust`), exterior windows remain shut and kitchen cooking smoke is exhausted locally; when outdoor minimum stays $\le 60\,\mu\text{g/m}^3$, the guidance notes an optional 10–15 min exhaust-led vent flush if heavy cooking feels stuffy.
-
-### 5. Ledger 2 — ARAI / WRI India Commute Emissions (`Emit Less`)
-
-$$
-\Delta\text{CO}_2\text{e}\,(\text{g}) = d_{\text{km}} \cdot (\text{EF}_{\text{CO}_2,\text{base}} - \text{EF}_{\text{CO}_2,\text{target}}), \qquad \Delta\text{PM}_{2.5,\text{tailpipe}}\,(\text{mg}) = d_{\text{km}} \cdot (\text{EF}_{\text{PM},\text{base}} - \text{EF}_{\text{PM},\text{target}})
-$$
+> Deep dive into all 15 backend modules, REST API endpoints, Gemini prompt contracts (`SYSTEM_PROMPT` & `VISION_SYSTEM_PROMPT` in [`backend/explainer.py`](backend/explainer.py)), failover state machine, and engineering lessons learned with Google Antigravity: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 ---
 
-## Local Setup & Verification
+## Project Structure and Tech Stack
 
-### 1. Backend (`backend/`)
+### Tech Stack
+- **Backend:** Python 3.12, FastAPI, Pydantic v2, httpx (async), Pillow (EXIF/image guard), `google-genai` (`gemini-3.5-flash-lite` -> `gemini-3.8-flash` -> `gemini-3.5-flash` -> `gemini-2.5-flash` failover), Uvicorn.
+- **Frontend:** React 18, Vite 6 (`target: "es2022"`, chunked Recharts + Lucide icons), Tailwind CSS 3, Web Speech API, PWA Service Worker (`sw.js`).
+- **Quality & CI Tooling:** Ruff (lint + `C901` complexity + Bugbear), Pylint, Mypy, Pytest, ESLint + `eslint-plugin-jsx-a11y`, Vitest + React Testing Library, `scripts/smoke.py`.
+- **Hosting:** Full-stack Vercel routing ([`vercel.json`](vercel.json)) with Render Python API config ([`render.yaml`](render.yaml)).
 
+### Repository Layout
+```text
+.
+├── backend/
+│   ├── main.py                # FastAPI entrypoint & REST routes (/health, /v1/*)
+│   ├── schemas.py             # Strict Pydantic v2 contracts (extra="forbid")
+│   ├── request_guards.py      # Prefix strip, security headers, origin check, bounded rate limiter
+│   ├── engine.py              # Symbolic planning facade & signed metric allowlists
+│   ├── air_quality.py         # CPCB NAQI sub-indices, Golden Window & 5-day outlook
+│   ├── exposure.py            # Hourly USEPA dose model & constraint-aware routine optimizer
+│   ├── indoor.py              # Clean Air Sanctuary scorer & cooking/ventilation thresholds
+│   ├── emissions.py           # ARAI / WRI commute CO2e & tailpipe PM2.5 calculations
+│   ├── data_fetcher.py        # Async Open-Meteo AQ/Weather/Geocode + 900s LRU TTL cache + replay
+│   ├── geo_india.py           # External JSON loader, city presets & state language inference
+│   ├── safety.py              # Pre-LLM 108/112 ER triage, HMAC-SHA256 & claim/numeric validator
+│   ├── gemini_client.py       # Pooled genai.Client, 429 key cooldown, 404 model cache & 8s cap
+│   ├── explainer.py           # System/Vision prompt orchestrator & evidence serializer
+│   ├── fallbacks.py           # 8-language deterministic plan/room templates & EN/Hinglish Q&A
+│   ├── image_audit.py         # 5 MB streaming upload guard, Pillow bomb cap & EXIF stripping
+│   ├── data/                  # Externalized constants.json, presets.json, fallback_replay.json
+│   └── tests/                 # 6 unit & integration suites (51 pytest tests)
+├── frontend/
+│   └── src/
+│       ├── App.jsx            # Dashboard shell & error boundary composition
+│       ├── api/client.js      # Timeout/retry fetch client + AbortController propagation
+│       ├── hooks/             # usePranaPlan.js & pure planReducer.js state transitions
+│       ├── components/        # Modular UI panels (HeaderBar, HeroAirCard, SmogChartCard, etc.)
+│       ├── utils/ & data/     # Formatters, PWA helpers, and UI constants
+│       └── __tests__/         # 12 Vitest + RTL test files (30 frontend tests)
+├── docs/                      # ARCHITECTURE.md, METHODOLOGY.md, DEPLOYMENT.md, BUILD_IN_PUBLIC.md, screenshots/
+├── scripts/smoke.py           # End-to-end API, HMAC 403, CSRF Origin & upload 415 smoke script
+├── SECURITY.md                # Threat model, verified controls & vulnerability disclosure policy
+├── vercel.json / render.yaml  # Production routing, CSP/HSTS headers & deployment specs
+└── .github/workflows/         # CI verification gate (ci.yml) & optional 5-min ping (keep-warm.yml)
+```
+
+---
+
+## Installation, Execution, and Testing
+
+### Prerequisites
+- **Python 3.12+** and **Node.js 22+** (matching [`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+- **Optional Google AI Studio Key:** Add `GEMINI_API_KEY` (or comma-separated `GEMINI_API_KEYS`) for live Gemini wording & room vision audits. Without a key, PRANA-AI automatically runs end-to-end via the Deterministic Fallback Engine.
+
+### Environment Variables (`.env.example`)
+Copy [`.env.example`](.env.example) to `.env` in the repository root:
+- `GEMINI_API_KEY` / `GEMINI_API_KEY_BACKUP` / `GEMINI_API_KEYS` — Google AI Studio credentials (server-only, never exposed to Vite `VITE_*`).
+- `PRANA_BUNDLE_SECRET` — Dedicated HMAC-SHA256 signing secret (recommended in production so signatures persist across restarts).
+- `ALLOWED_ORIGINS` — Allowlisted frontend origins (`http://localhost:5173,http://127.0.0.1:5173,https://prana-ai-promptwars.vercel.app`).
+- `VITE_API_BASE_URL` — Set only if deploying frontend and backend on separate origins (defaults to `/api`).
+
+> Deployment setup ([`vercel.json`](vercel.json) & [`render.yaml`](render.yaml)) and free 5-minute keep-warm setup (UptimeRobot `HEAD`/`GET /health` + [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) with `PRANA_HEALTH_URL`): **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
+
+### Local Development
+**1. Start Backend (`http://127.0.0.1:8000`)**
 ```bash
 python -m pip install -r backend/requirements-dev.txt
-# Copy .env.example to .env and set optional keys/CORS/secret:
-#   GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, GEMINI_API_KEYS (comma-separated), PRANA_BUNDLE_SECRET, ALLOWED_ORIGINS
 python -m uvicorn main:app --app-dir backend --reload --port 8000
 ```
 
-Run automated checks:
-
-```bash
-python -m ruff check backend
-python -m mypy backend
-python -m pytest -v backend/tests
-```
-
-### 2. Frontend (`frontend/`)
-
+**2. Start Frontend (`http://localhost:5173`, proxies `/api` -> `127.0.0.1:8000`)**
 ```bash
 cd frontend
 npm install
-npm run dev      # http://localhost:5173 (proxies /api -> 127.0.0.1:8000)
-npm run lint     # ESLint + jsx-a11y accessibility audit
-npm run test     # Vitest + React Testing Library suite
-npm run build    # Production bundle + PWA manifest, service worker & robots.txt in frontend/dist/
+npm run dev
+```
+
+### Automated Verification Commands
+```bash
+# Backend: Lint, Complexity (C901 <= 10), Pylint, Static Types, Tests & Contract Smoke
+python -m ruff check backend
+python -m ruff check --select C901,B backend
+python -m pylint --disable=too-many-locals,fixme backend/*.py
+python -m mypy backend
+python -m pytest -v backend/tests
+python scripts/smoke.py
+
+# Frontend: ESLint + jsx-a11y, Vitest + React Testing Library & Production Bundle
+npm --prefix frontend run lint
+npm --prefix frontend run test
+npm --prefix frontend run build
 ```
 
 ---
 
-## What Broke Along the Way & How Google Antigravity Helped
+## Engineering Quality and Verification Evidence
 
-- **Gemini SDK Server Deadline Error & November 2026 Model Failover:** Passing `HttpOptions` timeouts under 10s to `google-genai` triggers server deadline validation errors, and newer Google AI Studio keys return `404 NOT_FOUND` on retired `gemini-2.0-flash` and restricted `gemini-2.5-flash*` endpoints (redirecting to `gemini-3.5-flash-lite` / `gemini-3.8-flash`). Resolved via pooled `genai.Client` instances with `HttpOptions(timeout=10_000)` (`10s` SDK HTTP timeout), an `8.0s` per-call `asyncio.wait_for` cap, prioritized 3.x + legacy failover `("gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")` with 600s `404` caching, and 45s `429` key rotation.
-- **Category Threshold Blindness & Multi-Hour Dosimetry:** Switching between `Students & Kids`, `Seniors`, `Delivery Riders`, and `Adults` initially looked too uniform on `Moderate` days and undercounted multi-hour shift changes; fixed with distinct physiology thresholds (`Est. NAQI > 100` for sensitive/outdoor-shift profiles vs `> 150` for Adults) and hourly-integrated dosimetry across 4h–8h shifts.
-- **Single-Pass Stream Read & Request Race Conditions:** Rewrote `auditRoomPhoto` to read error/success response bodies once via `res.text()`, added `AbortController` + request sequence guards to debounced What-If sliders, and added Starlette `StripApiPrefixMiddleware` so both `/v1/*` and `/api/v1/*` work cleanly across local proxy and Vercel serverless routing.
-- **Built with Google Antigravity:** Used Google Antigravity across backend/frontend modular refactoring, systematic failure injection (`404/429/503/504` mocks), WAI-ARIA keyboard & contrast accessibility fixes, Vitest + ESLint + Ruff + Mypy CI automation, and continuous build verification.
+All quality, safety, and resilience claims below reflect concrete code implementations and automated checks configured in this repository rather than external estimates:
 
----
-
-## Prompts Used
-
-The app was built with Google Antigravity, and Gemini is guided by two system prompts in `backend/explainer.py`. Python computes every number first and packs it into an `EvidenceBundle`; Gemini only explains the precomputed facts in plain family language.
-
-### 1. Grounded plan and chat explainer (`SYSTEM_PROMPT`)
-
-"You are PRANA-AI, a warm, helpful neighbor and family air-quality guide in India. You receive precomputed air and schedule facts in JSON." The prompt sets strict rules: never invent, recalculate, round, or alter any number from the JSON; keep PM2.5 concentration and India NAQI separate; keep personal exposure avoided separate from travel CO2e saved; never call any polluted outdoor window "safe"; never recommend indoor houseplants for PM2.5 removal; avoid technical jargon; respect fixed commitments like school, work, and delivery shifts; state clearly when live data is unavailable and historical replay is used; and match the user's language in a warm, friendly 8th-grade reading level.
-
-### 2. Room photo audit (`VISION_SYSTEM_PROMPT`)
-
-"You are PRANA-AI, an indoor air quality specialist helping families lower indoor PM2.5 at low cost (Rs 0 to Rs 500)." The prompt asks Gemini Vision to inspect the uploaded room or kitchen photo for ventilation and dust issues (window and door gaps, kitchen exhaust fan placement, soft dust traps) and return strict JSON only with exactly 3 tips costing Rs 0 to Rs 500, each with a short title, a specific step, and a simple reason. It also forbids houseplant recommendations and invented sensor numbers.
+| Quality Pillar | Implemented Controls | Verification Path & Documentation |
+| :--- | :--- | :--- |
+| **Code Quality** | 15 single-responsibility backend modules (`engine.py` facade, isolated `gemini_client.py`, `fallbacks.py`, `request_guards.py`); strict Pydantic schemas; Vite + React reducer/hook decomposition (`planReducer.js`). | Enforced via `ruff` (`E,F,W,I,UP,B,SIM` + `C901`), `pylint`, `mypy`, and `eslint` in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
+| **Security** | Server-only secrets; HMAC-SHA256 bundle signing (`403` on tamper); pre-LLM ER triage; CSRF `Origin` checks; proxy-trusted IP rate limits (`120 req/60s`); 5 MB JPG/PNG/WebP EXIF strip & pixel-bomb cap; CSP/HSTS/COOP/`nosniff` headers. | Verified in `backend/tests/test_safety.py`, `test_request_guards.py`, `test_api.py`, [`scripts/smoke.py`](scripts/smoke.py), and detailed in [`SECURITY.md`](SECURITY.md). |
+| **Efficiency** | Bounded `900s` / `256`-entry LRU Open-Meteo cache; concurrent async AQ+weather fetches; `8.0s` LLM `asyncio.wait_for` cap with pooled clients; `429`/`404` cooldown caches; client `AbortController` + split Recharts/Lucide Vite chunks. | Verified in `backend/tests/test_data_fetcher.py`, `test_explainer.py`, and [`frontend/vite.config.js`](frontend/vite.config.js). |
+| **Testing** | **51** backend pytest tests across 6 suites (`test_api`, `test_data_fetcher`, `test_engine`, `test_explainer`, `test_request_guards`, `test_safety`), **6** API/security smoke checks, and **30** Vitest + RTL tests across 12 frontend suites. | Runnable directly via `pytest`, `python scripts/smoke.py`, and `npm --prefix frontend run test`. |
+| **Accessibility** | `eslint-plugin-jsx-a11y` flat audit; WAI-ARIA `tablist` arrow/Home/End keyboard switching; focus-preserving accessible modals; `role="alert"` / `aria-live="polite"` triage & hourly announcements; Web Speech TTS/STT & responsive layouts. | Verified in `frontend/src/__tests__/a11yAndModal.test.jsx`, `EmergencyBanner.test.jsx`, and `npm --prefix frontend run lint`. |
+| **Problem Alignment** | Solves **Challenge 06 (Urban Air Quality Assistant)** for Indian households: Pan-India locations, CPCB NAQI + PBLH curves, constraint-aware schedules, Rs 0–500 room photo fixes, equity mode for outdoor workers, and 8-language support. | Cross-referenced across [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) and [`docs/BUILD_IN_PUBLIC.md`](docs/BUILD_IN_PUBLIC.md). |
 
 ---
 
-## Honest Limitations
+## Scientific Methodology and Safety Boundaries
 
-1. **Coarse Gridded Global Model vs. Hyperlocal Monitors:** Live air forecasts come from Open-Meteo's **CAMS Global (`~0.4 deg` / `~40 km`, 3-hourly interpolated)** model paired with NWP weather forecasts (wind/PBLH), which smooths street-canyon traffic plumes or construction hotspots compared to a nearby CPCB CAAQMS reference station.
-2. **Estimated Hourly CPCB NAQI Proxy vs. 24h Station Average:** Official India CPCB NAQI is defined over a 24-hour station running average; PRANA-AI maps each hourly forecast pollutant concentration through CPCB breakpoints as an **Estimated Hourly India AQI** for intraday timing decisions.
-3. **Modeled Exposure Proxy, Not Medical Telemetry:** USEPA breathing rates ($V_E$) and microenvironment multipliers ($\kappa$) represent standardized population averages — not individual spirometry or calibrated indoor optical particle readings.
-4. **8-Language Fallback Boundaries:** All **8 Indian languages** (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`) work natively for Gemini plans/chat/room-audits as well as deterministic daily plans and room-audit fallbacks; when Gemini is offline or rate-limited, deterministic chat answers route topics in English/Hinglish while referencing live metrics.
-5. **Visual IAQ Estimates & Device Voice Differences:** `POST /v1/audit-room` inspects visible room features and excludes unverified PM2.5 sensor claims; browser Web Speech synthesis/STT availability depends on OS language packs and HTTPS mobile permissions.
+All equations use externalized constants in [`backend/data/constants.json`](backend/data/constants.json) — complete breakpoint tables, source DOIs/URLs, and coefficients are documented in **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)**:
 
-## Future Improvements
+1. **Estimated Hourly India CPCB NAQI:** $I_p = \text{round}\!\left(\frac{I_{\text{hi}} - I_{\text{lo}}}{C_{\text{hi}} - C_{\text{lo}}}(C - C_{\text{lo}}) + I_{\text{lo}}\right)$, taking $\max(I_{\text{PM}_{2.5}}, I_{\text{PM}_{10}}, I_{\text{NO}_2})$ using official CPCB breakpoints hourly so morning/evening spikes remain visible.
+2. **Dynamic Golden Window & `<15%` Rule:** $\text{Reduction \%} = \frac{P_{\text{am}} - \overline{\text{PM}}_{2.5,\,\text{2h}}}{P_{\text{am}}} \times 100$ — marks `has_meaningful_window = True` only when daytime air improves $\ge 15\%$ vs. morning peak (`06:00–09:00`); `is_clean_air_day = True` only if Est. NAQI $\le 100$ all day.
+3. **USEPA Inhaled Dose Proxy (`Breathe Less`):** $D\,(\mu\text{g}) = \sum_h C_{\text{out}}(h) \cdot \kappa_{\text{microenv}} \cdot V_E \cdot \Delta t_h \cdot (1 - \eta_{\text{mask}})$, converted via Berkeley Earth benchmark (`330 ug` $\approx 1\text{ cigarette}$).
+4. **Sanctuary Room Scoring:** $\text{clamp}_{[0,100]}(100 - 15 N_{\text{ext\_windows}} - 25 \cdot \mathbb{1}_{\text{road}} - 25 \cdot \mathbb{1}_{\text{kitchen}} - 10 \cdot \mathbb{1}_{\text{large}})$, opening exterior windows only when daytime minimum $\text{PM}_{2.5} \le \min(90\,\mu\text{g/m}^3, \text{indoor baseline})$.
+5. **ARAI / WRI Commute Emissions (`Emit Less`):** $\Delta\text{CO}_2\text{e} = d_{\text{km}}(\text{EF}_{\text{CO}_2,\text{base}} - \text{EF}_{\text{CO}_2,\text{target}})$ and $\Delta\text{PM}_{2.5,\text{tailpipe}} = d_{\text{km}}(\text{EF}_{\text{PM},\text{base}} - \text{EF}_{\text{PM},\text{target}})$.
 
-1. Hyperlocal CPCB station / low-cost sensor fusion alongside Open-Meteo `~40 km` CAMS Global forecasts so street-level hotspots show cleanly.
-2. Indoor PM2.5/CO2 sensor pairing for the room audit, replacing modeled indoor baselines with live telemetry.
+### Honest Limitations
+1. **Gridded Model Resolution (`~40 km` CAMS Global):** Open-Meteo's CAMS Global model (`~0.4 deg`) smooths hyperlocal street-canyon traffic plumes or construction hotspots compared to a nearby CPCB CAAQMS monitor.
+2. **Hourly Breakpoint Proxy vs. 24h CPCB Bulletin:** Official CPCB NAQI uses a 24-hour station running average; PRANA-AI applies CPCB breakpoints hourly for intraday scheduling.
+3. **Modeled Exposure Proxy, Not Clinical Telemetry:** Standardized USEPA inhalation rates ($V_E$) and microenvironment multipliers ($\kappa$) do not replace spirometry or physical indoor PM2.5/CO2 sensors.
+4. **8-Language Fallback Boundaries:** All 8 languages (`en`, `hinglish`, `hi`, `mr`, `kn`, `bn`, `ta`, `te`) work natively for Gemini responses as well as deterministic daily plans and room-audit fallbacks; offline chat topic routing operates in English/Hinglish while citing live numbers.
+5. **Visual IAQ & Browser Voice Dependencies:** Room audits evaluate visible features only without fabricated sensor numbers; Web Speech TTS/STT depends on HTTPS permissions and OS voice packs.
+
+### Future Improvements
+1. Hyperlocal CPCB station / low-cost sensor fusion alongside Open-Meteo `~40 km` CAMS Global forecasts.
+2. Indoor PM2.5 / CO2 sensor pairing for room audits to replace modeled indoor baselines with live telemetry.
 3. Web Push alerts when a meaningful daytime Golden Window opens (`>=15%` improvement).
 4. Full 8-language deterministic Q&A intent routing alongside existing 8-language plan templates.
-5. Offline-first cached last forecast snapshots paired with IndexedDB persistence when cellular connectivity drops.
-6. School and outdoor-fleet coordinator dashboards for synchronized low-exposure shift and assembly scheduling.
+5. Offline-first IndexedDB forecast snapshot persistence for intermittent mobile connectivity.
+6. School and outdoor-fleet coordinator views for synchronized low-exposure shift and assembly scheduling.

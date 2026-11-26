@@ -1,25 +1,59 @@
-"""USEPA duration-integrated PM2.5 dosimetry, activity scheduling, and ARAI emissions."""
+"""USEPA duration-integrated PM2.5 dosimetry and constraint-aware activity scheduling."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from air_quality import ENGINE_PARAMS, compute_pm25_naqi
-from data_fetcher import CONSTANTS
+from air_quality import ENGINE_PARAMS, compute_hourly_naqi, compute_pm25_naqi
+from emissions import compute_emit_less
+from geo_india import CONSTANTS
 from schemas import (
     AirSnapshotResponse,
-    EmitLessLedger,
     HourlyAirPoint,
     MaskType,
     PlanRequest,
     RoutineItemResult,
 )
 
+__all__ = [
+    "PRIMARY_FLEX_LEVELS",
+    "SENSITIVE_CONDITIONS",
+    "compute_emit_less",
+    "compute_inhaled_dose_ug",
+    "compute_interval_dose_ug",
+    "extract_next_day_pm25",
+    "extract_next_day_series",
+    "schedule_activities",
+]
+
 PRIMARY_FLEX_LEVELS = {"elderly_walk", "child_play", "running_or_outdoor_work", "brisk_walk"}
 SENSITIVE_CONDITIONS = {"asthma", "copd", "cardiac", "elderly", "child", "hypertension"}
 
 
-def compute_inhaled_dose_ug(
+@dataclass(frozen=True)
+class _IntervalQuery:
+    """Internal immutable exposure-window parameters."""
+
+    start_hour: int
+    duration_min: int
+    microenv_key: str
+    activity_level: str
+    mask: MaskType
+
+
+@dataclass(frozen=True)
+class _ScheduleContext:
+    """Per-plan routing and day-2 forecast context for activity scheduling."""
+
+    base_commute_micro: str
+    target_commute_micro: str
+    allow_slider: bool
+    next_day_pm25: list[float] | None
+    next_day_naqi: list[int] | None = None
+
+
+def compute_inhaled_dose_ug(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     outdoor_pm25: float,
     microenv_key: str,
     activity_level: str,
@@ -33,7 +67,7 @@ def compute_inhaled_dose_ug(
     return round(outdoor_pm25 * kappa * v_e * (duration_min / 60.0) * (1.0 - eta), 2)
 
 
-def _extract_next_day_pm25(raw_payload: dict[str, Any] | None) -> list[float] | None:
+def extract_next_day_pm25(raw_payload: dict[str, Any] | None) -> list[float] | None:
     """Extract day-2 hourly PM2.5 concentrations if multiday_raw spans >= 48 hours."""
     if not raw_payload:
         return None
@@ -43,43 +77,70 @@ def _extract_next_day_pm25(raw_payload: dict[str, Any] | None) -> list[float] | 
     return [float(x) for x in multi["pm2_5"][24:48]]
 
 
+def extract_next_day_series(
+    raw_payload: dict[str, Any] | None,
+) -> tuple[list[float] | None, list[int] | None]:
+    """Extract day-2 PM2.5 and 3-pollutant NAQI arrays when multiday_raw spans >= 48h."""
+    pm25 = extract_next_day_pm25(raw_payload)
+    if not pm25 or not raw_payload:
+        return pm25, None
+    multi = raw_payload["multiday_raw"]
+    pm10 = [float(x) for x in multi.get("pm10", [])[24:48]]
+    no2 = [float(x) for x in multi.get("nitrogen_dioxide", [])[24:48]]
+    if len(pm10) < 24 or len(no2) < 24:
+        return pm25, [compute_pm25_naqi(c)[0] for c in pm25]
+    naqi = [
+        int(compute_hourly_naqi(pm25[i], pm10[i], no2[i])["cpcb_naqi"]) for i in range(len(pm25))
+    ]
+    return pm25, naqi
+
+
+def _concentration_at_step(
+    hourly_points: list[HourlyAirPoint],
+    step_idx: int,
+    next_day_pm25: list[float] | None,
+    next_day_naqi: list[int] | None = None,
+) -> tuple[float, int]:
+    """Return (pm25, cpcb_naqi) without wrapping past midnight onto hour 0 of today."""
+    if step_idx < 24:
+        pt = hourly_points[step_idx]
+        return pt.pm2_5, pt.cpcb_naqi
+    offset = step_idx - 24
+    if next_day_pm25 and offset < len(next_day_pm25):
+        c_pm25 = next_day_pm25[offset]
+        c_naqi = (
+            next_day_naqi[offset]
+            if next_day_naqi and offset < len(next_day_naqi)
+            else compute_pm25_naqi(c_pm25)[0]
+        )
+        return c_pm25, c_naqi
+    pt = hourly_points[23]
+    return pt.pm2_5, pt.cpcb_naqi
+
+
 def _evaluate_interval_exposure(
     hourly_points: list[HourlyAirPoint],
-    start_hour: int,
-    duration_min: int,
-    microenv_key: str,
-    activity_level: str,
-    mask: MaskType,
+    query: _IntervalQuery,
     *,
     next_day_pm25: list[float] | None = None,
+    next_day_naqi: list[int] | None = None,
 ) -> tuple[float, float, int, float]:
-    """Integrate exposure hour-by-hour without wrapping late-night tasks onto hour 0 of today."""
-    if duration_min <= 0:
-        pt = hourly_points[max(0, min(23, start_hour))]
+    """Integrate exposure hour-by-hour over a contiguous activity duration."""
+    if query.duration_min <= 0:
+        pt = hourly_points[max(0, min(23, query.start_hour))]
         return 0.0, pt.pm2_5, pt.cpcb_naqi, pt.pm2_5
 
-    remaining = duration_min
-    step_idx = max(0, min(23, start_hour))
-    total_dose = 0.0
-    weighted_pm25 = 0.0
-    weighted_naqi = 0.0
-    peak_pm25 = 0.0
+    remaining = query.duration_min
+    step_idx = max(0, min(23, query.start_hour))
+    total_dose, weighted_pm25, weighted_naqi, peak_pm25 = 0.0, 0.0, 0.0, 0.0
 
     while remaining > 0:
         chunk_min = min(60, remaining)
-        if step_idx < 24:
-            pt = hourly_points[step_idx]
-            c_pm25, c_naqi = pt.pm2_5, pt.cpcb_naqi
-        elif next_day_pm25 and (step_idx - 24) < len(next_day_pm25):
-            c_pm25 = next_day_pm25[step_idx - 24]
-            c_naqi, _ = compute_pm25_naqi(c_pm25)
-        else:
-            # Never wrap late-night hours backward onto today's stale 00:00 data.
-            pt = hourly_points[23]
-            c_pm25, c_naqi = pt.pm2_5, pt.cpcb_naqi
-
+        c_pm25, c_naqi = _concentration_at_step(
+            hourly_points, step_idx, next_day_pm25, next_day_naqi
+        )
         total_dose += compute_inhaled_dose_ug(
-            c_pm25, microenv_key, activity_level, chunk_min, mask
+            c_pm25, query.microenv_key, query.activity_level, chunk_min, query.mask
         )
         weighted_pm25 += c_pm25 * chunk_min
         weighted_naqi += c_naqi * chunk_min
@@ -87,12 +148,12 @@ def _evaluate_interval_exposure(
         remaining -= chunk_min
         step_idx += 1
 
-    mean_pm25 = round(weighted_pm25 / duration_min, 1)
-    mean_naqi = int(round(weighted_naqi / duration_min))
+    mean_pm25 = round(weighted_pm25 / query.duration_min, 1)
+    mean_naqi = int(round(weighted_naqi / query.duration_min))
     return round(total_dose, 2), mean_pm25, mean_naqi, round(peak_pm25, 1)
 
 
-def compute_interval_dose_ug(
+def compute_interval_dose_ug(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     hourly_points: list[HourlyAirPoint],
     start_hour: int,
     duration_min: int,
@@ -105,11 +166,7 @@ def compute_interval_dose_ug(
     """Return duration-integrated (total_dose_ug, mean_pm25, mean_naqi)."""
     dose, mean_pm25, mean_naqi, _ = _evaluate_interval_exposure(
         hourly_points,
-        start_hour,
-        duration_min,
-        microenv_key,
-        activity_level,
-        mask,
+        _IntervalQuery(start_hour, duration_min, microenv_key, activity_level, mask),
         next_day_pm25=next_day_pm25,
     )
     return dose, mean_pm25, mean_naqi
@@ -117,30 +174,26 @@ def compute_interval_dose_ug(
 
 def _find_best_start_hour_for_duration(
     hourly_points: list[HourlyAirPoint],
-    duration_min: int,
-    microenv_key: str,
-    activity_level: str,
-    mask: MaskType,
+    query_template: _IntervalQuery,
     *,
     next_day_pm25: list[float] | None = None,
 ) -> int:
     """Optimize flexible start hour across daytime slots via exact duration-integrated dose."""
-    last_start = max(7, 20 - max(1, (duration_min + 59) // 60))
-    best_start = 13
-    best_dose = float("inf")
+    last_start = max(7, 20 - max(1, (query_template.duration_min + 59) // 60))
+    best_start, best_dose = 13, float("inf")
     for start_h in range(7, last_start + 1):
-        dose, _, _, _ = _evaluate_interval_exposure(
-            hourly_points,
+        candidate = _IntervalQuery(
             start_h,
-            duration_min,
-            microenv_key,
-            activity_level,
-            mask,
-            next_day_pm25=next_day_pm25,
+            query_template.duration_min,
+            query_template.microenv_key,
+            query_template.activity_level,
+            query_template.mask,
+        )
+        dose, _, _, _ = _evaluate_interval_exposure(
+            hourly_points, candidate, next_day_pm25=next_day_pm25
         )
         if dose < best_dose:
-            best_dose = dose
-            best_start = start_h
+            best_dose, best_start = dose, start_h
     return best_start
 
 
@@ -184,62 +237,64 @@ def _choose_mask(
     return current_mask
 
 
-def _schedule_fixed_activity(
+def _schedule_work_shift(
+    act: Any, req: PlanRequest, peak_pm25: float, base_micro: str
+) -> tuple[str, MaskType, list[str], str]:
+    """Build harm-reduction plan for a fixed outdoor work shift."""
+    rec_mask = _choose_mask(peak_pm25, req.budget_tier, act.current_mask, True, is_work_shift=True)
+    primary_step = (
+        "Wear a well-fitted N95/FFP2 respirator across peak corridors."
+        if rec_mask == "n95"
+        else "Use a snug wrap and take hydration breaks off arterial roads."
+    )
+    steps = [
+        primary_step,
+        "Wait for orders 10-15m away from idling diesel/auto queues.",
+        "Rinse face/nose with plain water post-shift; recover in Sanctuary Room.",
+    ]
+    rationale = (
+        f"Fixed work shift stays at {act.planned_hour:02d}:00; focuses on N95 filtration "
+        "and off-curb buffers rather than impractical stay-home advice."
+    )
+    return base_micro, rec_mask, steps, rationale
+
+
+def _schedule_commute_activity(
     act: Any,
     req: PlanRequest,
     peak_pm25: float,
     sensitive: bool,
-    commute_micros: tuple[str, str],
+    target_commute_micro: str,
 ) -> tuple[str, MaskType, list[str], str]:
-    """Generate harm-reduction steps for a fixed work, commute, or school activity."""
-    base_micro, target_commute_micro = commute_micros
+    """Build harm-reduction plan for a fixed daily commute."""
     arai_map = CONSTANTS["arai_transport_emissions"]
-    steps: list[str] = []
-
-    if act.is_work_shift:
-        rec_mask = _choose_mask(
-            peak_pm25, req.budget_tier, act.current_mask, True, is_work_shift=True
-        )
-        steps.append(
-            "Wear a well-fitted N95/FFP2 respirator across peak corridors."
-            if rec_mask == "n95"
-            else "Use a snug wrap and take hydration breaks off arterial roads."
-        )
-        steps.append("Wait for orders 10-15m away from idling diesel/auto queues.")
-        steps.append("Rinse face/nose with plain water post-shift; recover in Sanctuary Room.")
-        return (
-            base_micro,
-            rec_mask,
-            steps,
-            (
-                f"Fixed work shift stays at {act.planned_hour:02d}:00; focuses on N95 filtration "
-                "and off-curb buffers rather than impractical stay-home advice."
-            ),
-        )
-
-    if act.is_commute:
-        rec_mask = _choose_mask(peak_pm25, req.budget_tier, act.current_mask, sensitive)
-        base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
-        target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
-        if req.target_commute_mode != req.commute_mode:
-            steps.append(f"Switch mode from {base_spec['label']} to {target_spec['label']}.")
-        elif req.commute_mode in {"car_petrol_solo", "car_diesel_solo", "carpool_3p"}:
-            steps.append("Keep car AC on Internal Recirculate mode in congested stretches.")
-        if rec_mask == "n95":
-            steps.append("Wear a fitted N95 mask on platforms, walkways, and exposed roads.")
-        elif req.budget_tier == "rs_0":
-            steps.append("Keep windows closed in congestion and pick quieter side-streets.")
-        return (
-            target_commute_micro,
-            rec_mask,
-            steps,
-            (
-                f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
-                "mitigation reduce on-road PM2.5 uptake."
-            ),
-        )
-
     rec_mask = _choose_mask(peak_pm25, req.budget_tier, act.current_mask, sensitive)
+    base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
+    target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
+
+    steps: list[str] = []
+    if req.target_commute_mode != req.commute_mode:
+        steps.append(f"Switch mode from {base_spec['label']} to {target_spec['label']}.")
+    elif req.commute_mode in {"car_petrol_solo", "car_diesel_solo", "carpool_3p"}:
+        steps.append("Keep car AC on Internal Recirculate mode in congested stretches.")
+    if rec_mask == "n95":
+        steps.append("Wear a fitted N95 mask on platforms, walkways, and exposed roads.")
+    elif req.budget_tier == "rs_0":
+        steps.append("Keep windows closed in congestion and pick quieter side-streets.")
+
+    rationale = (
+        f"Fixed commute stays at {act.planned_hour:02d}:00; microenvironment and mask "
+        "mitigation reduce on-road PM2.5 uptake."
+    )
+    return target_commute_micro, rec_mask, steps, rationale
+
+
+def _schedule_fixed_default(
+    act: Any, req: PlanRequest, peak_pm25: float, sensitive: bool, base_micro: str
+) -> tuple[str, MaskType, list[str], str]:
+    """Build harm-reduction plan for school pickup/drop or general fixed waits."""
+    rec_mask = _choose_mask(peak_pm25, req.budget_tier, act.current_mask, sensitive)
+    steps: list[str] = []
     if rec_mask == "n95":
         steps.append("Use a child/adult fitted N95 mask during the roadside wait.")
     elif req.budget_tier == "rs_0":
@@ -253,6 +308,46 @@ def _schedule_fixed_activity(
     )
 
 
+def _schedule_fixed_activity(
+    act: Any,
+    req: PlanRequest,
+    peak_pm25: float,
+    sensitive: bool,
+    commute_micros: tuple[str, str],
+) -> tuple[str, MaskType, list[str], str]:
+    """Dispatch a fixed activity to work-shift, commute, or roadside-wait planning."""
+    base_micro, target_commute_micro = commute_micros
+    if act.is_work_shift:
+        return _schedule_work_shift(act, req, peak_pm25, base_micro)
+    if act.is_commute:
+        return _schedule_commute_activity(act, req, peak_pm25, sensitive, target_commute_micro)
+    return _schedule_fixed_default(act, req, peak_pm25, sensitive, base_micro)
+
+
+def _flexible_badge(req: PlanRequest, rec_h: int, planned_h: int, is_slider: bool) -> str:
+    """Select UI status badge label for a scheduled flexible outdoor activity."""
+    if req.walk_override_hour is not None and is_slider:
+        return "WHAT-IF • TESTED"
+    return "FLEXIBLE • SHIFTED" if rec_h != planned_h else "FLEXIBLE • KEPT"
+
+
+def _indoor_override_result(
+    req: PlanRequest, rec_mask: MaskType
+) -> tuple[str, str, MaskType, list[str], str]:
+    """Move vigorous sensitive-member workouts indoors on flat (<15% dip) pollution curves."""
+    opt_micro = "indoor_sealed" if req.budget_tier != "rs_0" else "indoor_shut"
+    return (
+        "FLEXIBLE • INDOOR",
+        opt_micro,
+        rec_mask,
+        [
+            "Outdoor PM2.5 stays flat (<15% dip); move exercise inside the Sanctuary Room.",
+            "Do light stretching or indoor walking instead of outdoor exertion.",
+        ],
+        "Honesty rule triggered: no meaningful daytime drop, so vigorous exercise moves inside.",
+    )
+
+
 def _schedule_flexible_activity(
     act: Any,
     req: PlanRequest,
@@ -261,42 +356,20 @@ def _schedule_flexible_activity(
     slot_info: tuple[int, float, float, float, bool],
 ) -> tuple[str, str, MaskType, list[str], str]:
     """Shift flexible outdoor activity to cleanest slot or Sanctuary Room."""
-    rec_h, c_orig, c_rec, c_rec_peak, is_slider_target = slot_info
-    golden = snapshot.golden_window
-    steps: list[str] = []
+    rec_h, c_orig, c_rec, c_rec_peak, is_slider = slot_info
     rec_mask: MaskType = act.current_mask
+    no_win = not snapshot.golden_window.has_meaningful_window
+    if no_win and not is_slider and sensitive:
+        return _indoor_override_result(req, rec_mask)
 
-    if not golden.has_meaningful_window and req.walk_override_hour is None and sensitive:
-        opt_micro = "indoor_sealed" if req.budget_tier != "rs_0" else "indoor_shut"
-        return (
-            "FLEXIBLE • INDOOR",
-            opt_micro,
-            rec_mask,
-            [
-                "Outdoor PM2.5 stays flat (<15% dip); move exercise inside the Sanctuary Room.",
-                "Do light stretching or indoor walking instead of outdoor exertion.",
-            ],
-            (
-                "Honesty rule triggered: no meaningful daytime drop, "
-                "so vigorous exercise moves inside."
-            ),
-        )
-
-    if req.walk_override_hour is not None and is_slider_target:
-        badge = "WHAT-IF • TESTED"
-    elif rec_h != act.planned_hour:
-        badge = "FLEXIBLE • SHIFTED"
-    else:
-        badge = "FLEXIBLE • KEPT"
-
-    if rec_h != act.planned_hour:
-        steps.append(
+    steps = [
+        (
             f"Shift from {act.planned_hour:02d}:00 ({c_orig} ug/m3 avg) "
             f"to {rec_h:02d}:00 ({c_rec} ug/m3 avg)."
         )
-    else:
-        steps.append(f"Timing at {rec_h:02d}:00 already sits in a lower-exposure slot.")
-
+        if rec_h != act.planned_hour
+        else f"Timing at {rec_h:02d}:00 already sits in a lower-exposure slot."
+    ]
     midday_cutoff = float(ENGINE_PARAMS["mask_thresholds_pm25"]["midday_flexible_n95"])
     if c_rec_peak > midday_cutoff and req.budget_tier != "rs_0":
         rec_mask = "n95"
@@ -304,16 +377,12 @@ def _schedule_flexible_activity(
     else:
         steps.append("Pick tree-lined lanes away from main arterial intersections.")
 
-    return (
-        badge,
-        "walk_sidewalk",
-        rec_mask,
-        steps,
-        (
-            f"Flexible slot optimized over {act.duration_min} min from {rec_h:02d}:00 "
-            f"(mixing height {snapshot.hourly[rec_h].boundary_layer_height:.0f} m)."
-        ),
+    rationale = (
+        f"Flexible slot optimized over {act.duration_min} min from {rec_h:02d}:00 "
+        f"(mixing height {snapshot.hourly[rec_h].boundary_layer_height:.0f} m)."
     )
+    badge = _flexible_badge(req, rec_h, act.planned_hour, is_slider)
+    return badge, "walk_sidewalk", rec_mask, steps, rationale
 
 
 def _format_dose_substitution(
@@ -338,77 +407,51 @@ def _format_dose_substitution(
     )
 
 
-def _schedule_single_activity(
+def _choose_flexible_outcome(
     act: Any,
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
-    ctx: tuple[str, str, bool, list[float] | None],
-) -> tuple[RoutineItemResult, float, float, str, bool]:
-    """Optimize and evaluate one activity item, returning result and dose totals."""
-    base_commute_micro, target_commute_micro, allow_slider, next_day_pm25 = ctx
-    hourly = snapshot.hourly
-    sensitive = _has_sensitive_member(req, act.member_name)
-    base_micro = base_commute_micro if act.is_commute else "walk_sidewalk"
-    base_dose, c_orig, naqi_orig, c_orig_peak = _evaluate_interval_exposure(
-        hourly,
-        act.planned_hour,
-        act.duration_min,
-        base_micro,
-        act.activity_level,
-        act.current_mask,
-        next_day_pm25=next_day_pm25,
-    )
-
-    used_slider = False
-    if act.flexibility == "fixed":
-        rec_h = act.planned_hour
-        badge = "FIXED • MITIGATED"
-        opt_micro, rec_mask, steps, rationale = _schedule_fixed_activity(
-            act, req, c_orig_peak, sensitive, (base_micro, target_commute_micro)
-        )
+    ctx: _ScheduleContext,
+    base_summary: tuple[bool, float],
+) -> tuple[int, str, str, MaskType, list[str], str, bool]:
+    """Select start hour (or what-if slider hour) and build flexible mitigation details."""
+    sensitive, c_orig = base_summary
+    is_slider = ctx.allow_slider and req.walk_override_hour is not None
+    if is_slider and req.walk_override_hour is not None:
+        rec_h = req.walk_override_hour
     else:
-        is_slider = allow_slider and req.walk_override_hour is not None
-        if is_slider and req.walk_override_hour is not None:
-            rec_h = req.walk_override_hour
-            used_slider = True
-        else:
-            rec_h = _find_best_start_hour_for_duration(
-                hourly,
-                act.duration_min,
-                "walk_sidewalk",
-                act.activity_level,
-                act.current_mask,
-                next_day_pm25=next_day_pm25,
-            )
-
-        _, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
-            hourly,
-            rec_h,
-            act.duration_min,
-            "walk_sidewalk",
-            act.activity_level,
-            act.current_mask,
-            next_day_pm25=next_day_pm25,
+        template = _IntervalQuery(
+            0, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
         )
-        badge, opt_micro, rec_mask, steps, rationale = _schedule_flexible_activity(
-            act, req, snapshot, sensitive, (rec_h, c_orig, c_rec_prev, c_rec_peak, is_slider)
+        rec_h = _find_best_start_hour_for_duration(
+            snapshot.hourly, template, next_day_pm25=ctx.next_day_pm25
         )
+    walk_query = _IntervalQuery(
+        rec_h, act.duration_min, "walk_sidewalk", act.activity_level, act.current_mask
+    )
+    _, c_rec_prev, _, c_rec_peak = _evaluate_interval_exposure(
+        snapshot.hourly,
+        walk_query,
+        next_day_pm25=ctx.next_day_pm25,
+        next_day_naqi=ctx.next_day_naqi,
+    )
+    badge, opt_micro, rec_mask, steps, rationale = _schedule_flexible_activity(
+        act, req, snapshot, sensitive, (rec_h, c_orig, c_rec_prev, c_rec_peak, is_slider)
+    )
+    return rec_h, badge, opt_micro, rec_mask, steps, rationale, is_slider
 
-    opt_dose, c_rec, naqi_rec, _ = _evaluate_interval_exposure(
-        hourly,
-        rec_h,
-        act.duration_min,
-        opt_micro,
-        act.activity_level,
-        rec_mask,
-        next_day_pm25=next_day_pm25,
-    )
-    sub_text = _format_dose_substitution(
-        act,
-        (base_micro, c_orig, base_dose, act.current_mask),
-        (opt_micro, c_rec, opt_dose, rec_mask),
-    )
-    item = RoutineItemResult(
+
+def _assemble_routine_item(
+    act: Any,
+    base_metrics: tuple[float, int, float],
+    opt_metrics: tuple[int, float, int, float, MaskType],
+    copy_info: tuple[str, list[str], str],
+) -> RoutineItemResult:
+    """Construct immutable RoutineItemResult schema from evaluated baseline & optimal runs."""
+    c_orig, naqi_orig, base_dose = base_metrics
+    rec_h, c_rec, naqi_rec, opt_dose, rec_mask = opt_metrics
+    badge, steps, rationale = copy_info
+    return RoutineItemResult(
         id=act.id,
         name=act.name,
         member_name=act.member_name,
@@ -428,25 +471,63 @@ def _schedule_single_activity(
         mitigation_steps=steps,
         rationale=rationale,
     )
+
+
+def _schedule_single_activity(
+    act: Any,
+    req: PlanRequest,
+    snapshot: AirSnapshotResponse,
+    ctx: _ScheduleContext,
+) -> tuple[RoutineItemResult, float, float, str, bool]:
+    """Optimize and evaluate one activity item, returning result and dose totals."""
+    sensitive = _has_sensitive_member(req, act.member_name)
+    base_micro = ctx.base_commute_micro if act.is_commute else "walk_sidewalk"
+    base_q = _IntervalQuery(
+        act.planned_hour, act.duration_min, base_micro, act.activity_level, act.current_mask
+    )
+    base_dose, c_orig, naqi_orig, c_orig_peak = _evaluate_interval_exposure(
+        snapshot.hourly, base_q, next_day_pm25=ctx.next_day_pm25, next_day_naqi=ctx.next_day_naqi
+    )
+    if act.flexibility == "fixed":
+        rec_h, badge, used_slider = act.planned_hour, "FIXED • MITIGATED", False
+        opt_micro, rec_mask, steps, rationale = _schedule_fixed_activity(
+            act, req, c_orig_peak, sensitive, (base_micro, ctx.target_commute_micro)
+        )
+    else:
+        rec_h, badge, opt_micro, rec_mask, steps, rationale, used_slider = _choose_flexible_outcome(
+            act, req, snapshot, ctx, (sensitive, c_orig)
+        )
+    opt_q = _IntervalQuery(rec_h, act.duration_min, opt_micro, act.activity_level, rec_mask)
+    opt_dose, c_rec, naqi_rec, _ = _evaluate_interval_exposure(
+        snapshot.hourly, opt_q, next_day_pm25=ctx.next_day_pm25, next_day_naqi=ctx.next_day_naqi
+    )
+    base_spec = (base_micro, c_orig, base_dose, act.current_mask)
+    opt_spec = (opt_micro, c_rec, opt_dose, rec_mask)
+    sub_text = _format_dose_substitution(act, base_spec, opt_spec)
+    item = _assemble_routine_item(
+        act,
+        (c_orig, naqi_orig, base_dose),
+        (rec_h, c_rec, naqi_rec, opt_dose, rec_mask),
+        (badge, steps, rationale),
+    )
     return item, base_dose, opt_dose, sub_text, used_slider
 
 
-def _schedule_activities(
+def schedule_activities(
     req: PlanRequest,
     snapshot: AirSnapshotResponse,
     next_day_pm25: list[float] | None = None,
+    next_day_naqi: list[int] | None = None,
 ) -> tuple[list[RoutineItemResult], float, float, list[str]]:
     """Run constraint-aware scheduling and hourly-integrated USEPA dosimetry."""
     arai_map = CONSTANTS["arai_transport_emissions"]
-    base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
+    base_micro = str(arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])["microenv"])
     target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
-    base_commute_micro = str(base_spec["microenv"])
-    target_commute_micro = str(target_spec["microenv"])
+    target_micro = str(target_spec["microenv"])
 
     results: list[RoutineItemResult] = []
-    total_base = 0.0
-    total_opt = 0.0
     substitutions: list[str] = []
+    total_base, total_opt = 0.0, 0.0
     walk_override_applied = False
 
     for act in req.activities:
@@ -459,7 +540,7 @@ def _schedule_activities(
             act,
             req,
             snapshot,
-            (base_commute_micro, target_commute_micro, allow_slider, next_day_pm25),
+            _ScheduleContext(base_micro, target_micro, allow_slider, next_day_pm25, next_day_naqi),
         )
         walk_override_applied = walk_override_applied or used_slider
         total_base += base_dose
@@ -468,52 +549,3 @@ def _schedule_activities(
         results.append(item)
 
     return results, round(total_base, 2), round(total_opt, 2), substitutions
-
-
-def compute_emit_less(req: PlanRequest) -> EmitLessLedger:
-    """Compute Ledger 2 (ARAI / WRI India transport CO2e and tailpipe PM2.5 savings)."""
-    arai_map = CONSTANTS["arai_transport_emissions"]
-    base_spec = arai_map.get(req.commute_mode, arai_map["car_petrol_solo"])
-    target_spec = arai_map.get(req.target_commute_mode, arai_map["electric_metro"])
-
-    co2_saved_g = round(
-        req.commute_km * (float(base_spec["co2_g_pkm"]) - float(target_spec["co2_g_pkm"])), 1
-    )
-    co2_saved_kg = round(co2_saved_g / 1000.0, 3)
-    tailpipe_pm25_mg = round(
-        req.commute_km * (float(base_spec["pm25_mg_pkm"]) - float(target_spec["pm25_mg_pkm"])), 1
-    )
-    phone_charges = round(max(0.0, co2_saved_g) / float(ENGINE_PARAMS["phone_charge_co2_g"]))
-
-    substitutions = [
-        f"CO2e = {req.commute_km} km * ({base_spec['co2_g_pkm']} - {target_spec['co2_g_pkm']}) "
-        f"g/pkm = {co2_saved_g} g ({co2_saved_kg} kg)",
-        f"Tailpipe PM2.5 = {req.commute_km} km * ({base_spec['pm25_mg_pkm']} - "
-        f"{target_spec['pm25_mg_pkm']}) mg/pkm = {tailpipe_pm25_mg} mg",
-    ]
-    if req.commute_mode == req.target_commute_mode:
-        substitutions.append(
-            "Same transport mode kept (e.g., fixed work vehicle); tailpipe counterfactual = 0."
-        )
-
-    return EmitLessLedger(
-        baseline_mode=req.commute_mode,
-        target_mode=req.target_commute_mode,
-        baseline_mode_label=str(base_spec["label"]),
-        target_mode_label=str(target_spec["label"]),
-        commute_km=req.commute_km,
-        co2_saved_g=co2_saved_g,
-        co2_saved_kg=co2_saved_kg,
-        tailpipe_pm25_saved_mg=tailpipe_pm25_mg,
-        phone_charges_saved=phone_charges,
-        label="Modeled Estimate",
-        formula_summary=(
-            "Delta CO2e (g) = km * (EF_CO2_base - EF_CO2_new); "
-            "Delta Tailpipe PM2.5 (mg) = km * (EF_PM_base - EF_PM_new)"
-        ),
-        substitutions=substitutions,
-        limitations=(
-            "Uses ARAI / WRI India average per-passenger-km emission factors; actual fuel use, "
-            "occupancy, and congestion idling vary."
-        ),
-    )

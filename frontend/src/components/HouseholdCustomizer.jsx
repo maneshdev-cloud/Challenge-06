@@ -33,9 +33,14 @@ export default function HouseholdCustomizer({
   function addMember(e) {
     e.preventDefault();
     if (!newMemberName.trim()) return;
+    const rawAge = String(newMemberAge ?? "").trim();
+    const parsedAge = rawAge === "" ? Number.NaN : Number(rawAge);
+    const boundedAge = Number.isFinite(parsedAge)
+      ? Math.round(Math.max(0, Math.min(110, parsedAge)))
+      : 25;
     const member = {
       name: newMemberName.trim(),
-      age: Number(newMemberAge) || 25,
+      age: boundedAge,
       conditions: [newMemberCond]
     };
     onUpdateConfig({
@@ -161,7 +166,7 @@ export default function HouseholdCustomizer({
                     uses_agarbatti_or_coils: e.target.checked
                   })
                 }
-                className="h-4 w-4 rounded accent-teal-600"
+                className="h-4 w-4 rounded accent-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               />
               Uses agarbatti, dhoop, or mosquito coils indoors
             </label>
@@ -173,7 +178,7 @@ export default function HouseholdCustomizer({
                 onChange={(e) =>
                   onUpdateConfig({ ...planConfig, preset_id: null, dry_sweeps: e.target.checked })
                 }
-                className="h-4 w-4 rounded accent-teal-600"
+                className="h-4 w-4 rounded accent-teal-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               />
               Uses dry broom (jhadu) daily
             </label>
@@ -203,8 +208,8 @@ export default function HouseholdCustomizer({
             <input
               id="new-member-age"
               type="number"
-              min={1}
-              max={105}
+              min={0}
+              max={110}
               value={newMemberAge}
               onChange={(e) => setNewMemberAge(e.target.value)}
               className="w-16 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold"

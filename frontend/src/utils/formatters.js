@@ -1,12 +1,16 @@
 export function formatHour(hour) {
-  if (hour === null || hour === undefined) return "--:--";
-  const h = ((Number(hour) % 24) + 24) % 24;
+  if (hour === null || hour === undefined || String(hour).trim() === "") return "--:--";
+  const num = Number(hour);
+  if (Number.isNaN(num)) return "--:--";
+  const h = ((num % 24) + 24) % 24;
   return `${String(h).padStart(2, "0")}:00`;
 }
 
 export function formatHourAmPm(hour) {
-  if (hour === null || hour === undefined) return "--";
-  const h = ((Number(hour) % 24) + 24) % 24;
+  if (hour === null || hour === undefined || String(hour).trim() === "") return "--";
+  const num = Number(hour);
+  if (Number.isNaN(num)) return "--";
+  const h = ((num % 24) + 24) % 24;
   const suffix = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:00 ${suffix}`;

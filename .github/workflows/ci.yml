@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend:
-    name: Backend Lint, Typecheck & Pytest
+    name: Backend Lint, Complexity, Pylint, Typecheck, Smoke & Pytest
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,14 +25,20 @@ jobs:
       - name: Install backend dev dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-dev.txt
 
-      - name: Ruff lint check
-        run: python -m ruff check backend
+      - name: Ruff lint, complexity & bugbear checks
+        run: python -m ruff check backend && python -m ruff check --select C901,B backend
+
+      - name: Pylint quality check
+        run: python -m pylint --disable=too-many-locals,fixme backend/*.py
 
       - name: Mypy static type check
         run: python -m mypy backend
 
       - name: Pytest suite
         run: python -m pytest -v backend/tests
+
+      - name: API contract & security smoke script
+        run: python scripts/smoke.py
 
   frontend:
     name: Frontend ESLint, Vitest & Build

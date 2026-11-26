@@ -53,7 +53,7 @@ export default function Modal({
     return () => {
       window.cancelAnimationFrame(rafId);
       document.removeEventListener("keydown", handleKeyDown);
-      if (prevFocused && typeof prevFocused.focus === "function") {
+      if (prevFocused && typeof prevFocused.focus === "function" && document.body.contains(prevFocused)) {
         prevFocused.focus();
       }
     };

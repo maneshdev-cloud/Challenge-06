@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import explainer
+import gemini_client
 import main as main_mod
 from main import app
 
@@ -294,7 +295,7 @@ def test_chat_trip_planning_and_simulated_crash_returns_200(monkeypatch) -> None
     bundle = plan_res["evidence_bundle"]
     sig = plan_res["evidence_signature"]
 
-    monkeypatch.setattr(explainer, "_get_api_keys", lambda: [])
+    monkeypatch.setattr(gemini_client, "get_api_keys", lambda: [])
     trip_resp = client.post(
         "/v1/chat",
         json={
@@ -504,11 +505,12 @@ def test_chat_rejects_tampered_evidence_bundle() -> None:
         assert resp.status_code == 403
 
 
-def test_emergency_triage_bypasses_rate_limit() -> None:
+def test_emergency_triage_bypasses_rate_limit(monkeypatch) -> None:
     """Verify acute distress ER interception succeeds even when caller IP is rate-limited."""
     import time
     from collections import deque
 
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
     delhi_preset = next(p for p in client.get("/v1/presets").json() if p["id"] == "delhi_family")
     plan_res = client.post(
         "/v1/plan", json={**delhi_preset, "simulate_stale": True, "skip_llm": True}
@@ -595,3 +597,22 @@ def test_audit_room_strips_exif_and_rejects_oversized_pixel_bomb(monkeypatch) ->
         files={"file": ("bomb.png", bomb_buf.getvalue(), "image/png")},
     )
     assert bomb_resp.status_code == 415
+
+    # Truncated JPEG passing verify() but failing load() must return HTTP 415 rather than 500
+    trunc_buf = io.BytesIO()
+    Image.new("RGB", (128, 128), color=(90, 120, 150)).save(trunc_buf, format="JPEG")
+    trunc_bytes = trunc_buf.getvalue()[:-6]
+    trunc_resp = client.post(
+        "/v1/audit-room",
+        data={"city": "Delhi", "language": "en"},
+        files={"file": ("broken.jpg", trunc_bytes, "image/jpeg")},
+    )
+    assert trunc_resp.status_code == 415
+
+    # Oversized Content-Length rejects upfront with 413 before multipart disk spooling
+    huge_len = client.post(
+        "/v1/audit-room",
+        headers={"content-length": str(8 * 1024 * 1024)},
+        data={"city": "Delhi"},
+    )
+    assert huge_len.status_code == 413

@@ -15,16 +15,16 @@ from air_quality import (
     compute_pm25_naqi,
     find_golden_window,
 )
-from data_fetcher import CONSTANTS
+from emissions import compute_emit_less
 from exposure import (
     PRIMARY_FLEX_LEVELS,
     SENSITIVE_CONDITIONS,
-    _extract_next_day_pm25,
-    _schedule_activities,
-    compute_emit_less,
     compute_inhaled_dose_ug,
     compute_interval_dose_ug,
+    extract_next_day_series,
+    schedule_activities,
 )
+from geo_india import CONSTANTS
 from indoor import DEFAULT_ROOMS, score_sanctuary
 from schemas import (
     AirSnapshotResponse,
@@ -61,27 +61,75 @@ __all__ = [
 ]
 
 
+def _matches_member_tier(
+    members: list[Any], cutoff: int, conds: set[str], *, min_age: bool
+) -> bool:
+    """Return True if any member meets an age bound or shares a respiratory/profile condition."""
+    for m in members:
+        age_ok = m.age >= cutoff if min_age else m.age <= cutoff
+        if age_ok or bool({c.lower() for c in m.conditions} & conds):
+            return True
+    return False
+
+
 def _resolve_profile_key(req: PlanRequest) -> UserCategory:
     """Determine primary user category from explicit flag or household profile."""
     if req.user_category is not None:
         return req.user_category
     ages = ENGINE_PARAMS["age_cutoffs"]
-    all_conditions = {c.lower() for m in req.members for c in m.conditions}
-    if any(a.is_work_shift for a in req.activities) or "outdoor_worker" in all_conditions:
+    if any(a.is_work_shift for a in req.activities) or _matches_member_tier(
+        req.members, 999, {"outdoor_worker"}, min_age=True
+    ):
         return "delivery_riders"
-    if any(
-        m.age >= int(ages["senior_profile_min"])
-        or bool({c.lower() for c in m.conditions} & {"elderly", "copd", "cardiac"})
-        for m in req.members
+    if _matches_member_tier(
+        req.members, int(ages["senior_profile_min"]), {"elderly", "copd", "cardiac"}, min_age=True
     ):
         return "seniors"
-    if any(
-        m.age <= int(ages["student_kid_max"])
-        or bool({c.lower() for c in m.conditions} & {"child", "student"})
-        for m in req.members
+    if _matches_member_tier(
+        req.members, int(ages["student_kid_max"]), {"child", "student"}, min_age=False
     ):
         return "students_kids"
     return "adults_commuters"
+
+
+_DOMAIN_REFERENCE_VALUES: tuple[float, ...] = (2.0, 2.5, 10.0, 13.0, 95.0)
+
+
+def _profile_copy_context(
+    snapshot: AirSnapshotResponse,
+    breathe_less: BreatheLessLedger,
+    emit_less: EmitLessLedger,
+    spec: tuple[UserCategory, int, float, int],
+) -> dict[str, Any]:
+    """Build string interpolation context for profile risk templates."""
+    _key, threshold, peak_ve, total_outdoor_min = spec
+    gw = snapshot.golden_window
+    mult = float(ENGINE_PARAMS["roadside_plume_multiplier"])
+    co2_str = (
+        f"{emit_less.co2_saved_kg} kg"
+        if emit_less.co2_saved_g >= 1000
+        else f"{emit_less.co2_saved_g} g"
+    )
+    return {
+        "hrs": round(total_outdoor_min / 60.0, 1),
+        "peak_ve": peak_ve,
+        "mult": mult,
+        "pm25": snapshot.current_pm25,
+        "road_pm25": round(snapshot.current_pm25 * mult, 1),
+        "naqi": snapshot.current_naqi,
+        "cat": snapshot.current_category,
+        "threshold": threshold,
+        "base_dose": breathe_less.baseline_dose_ug,
+        "opt_dose": breathe_less.optimized_dose_ug,
+        "dose_avoided": breathe_less.dose_avoided_ug,
+        "dose_red_pct": breathe_less.reduction_pct,
+        "gw_red_pct": round(gw.reduction_pct),
+        "morning_peak_pm25": gw.morning_peak_pm25,
+        "best_win": f"{gw.start_hour:02d}:00–{gw.end_hour:02d}:00",
+        "commute_km": emit_less.commute_km,
+        "co2_str": co2_str,
+        "target_mode_label": emit_less.target_mode_label,
+    }
 
 
 def build_profile_risk_summary(
@@ -97,42 +145,17 @@ def build_profile_risk_summary(
     peak_ve = round(max(ve_values), 2)
     total_outdoor_min = sum(a.duration_min for a in req.activities)
     threshold = int(ENGINE_PARAMS["category_warning_thresholds_naqi"][key])
-    naqi = snapshot.current_naqi
-    warning_active = naqi > threshold
+    warning_active = snapshot.current_naqi > threshold
 
     tpl = CONSTANTS["profile_copy_templates"][key]
-    band_idx = 0 if naqi > 200 else (1 if warning_active else 2)
+    band_idx = 0 if snapshot.current_naqi > 200 else (1 if warning_active else 2)
     gw = snapshot.golden_window
     headline_key = (
         "clean" if gw.is_clean_air_day else ("window" if gw.has_meaningful_window else "flat")
     )
-    mult = float(ENGINE_PARAMS["roadside_plume_multiplier"])
-    co2_str = (
-        f"{emit_less.co2_saved_kg} kg"
-        if emit_less.co2_saved_g >= 1000
-        else f"{emit_less.co2_saved_g} g"
+    ctx = _profile_copy_context(
+        snapshot, breathe_less, emit_less, (key, threshold, peak_ve, total_outdoor_min)
     )
-    ctx = {
-        "hrs": round(total_outdoor_min / 60.0, 1),
-        "peak_ve": peak_ve,
-        "mult": mult,
-        "pm25": snapshot.current_pm25,
-        "road_pm25": round(snapshot.current_pm25 * mult, 1),
-        "naqi": naqi,
-        "cat": snapshot.current_category,
-        "threshold": threshold,
-        "base_dose": breathe_less.baseline_dose_ug,
-        "opt_dose": breathe_less.optimized_dose_ug,
-        "dose_avoided": breathe_less.dose_avoided_ug,
-        "dose_red_pct": breathe_less.reduction_pct,
-        "gw_red_pct": round(gw.reduction_pct),
-        "morning_peak_pm25": gw.morning_peak_pm25,
-        "best_win": f"{gw.start_hour:02d}:00–{gw.end_hour:02d}:00",
-        "commute_km": emit_less.commute_km,
-        "co2_str": co2_str,
-        "target_mode_label": emit_less.target_mode_label,
-    }
-
     return ProfileRiskSummary(
         profile_key=key,
         profile_label=str(tpl["label"]),
@@ -149,19 +172,19 @@ def build_profile_risk_summary(
     )
 
 
-def _collect_grounded_metrics(
+def _build_pm25_allowlist(
     snapshot: AirSnapshotResponse,
     routine_plan: list[RoutineItemResult],
     sanctuary_plan: SanctuaryPlan,
-    breathe_less: BreatheLessLedger,
-    emit_less: EmitLessLedger,
-    profile_summary: ProfileRiskSummary,
-) -> tuple[GroundedMetrics, list[float]]:
-    """Build category-scoped and global numeric allowlists before EvidenceBundle creation."""
+) -> set[float]:
+    """Collect grounded PM2.5 concentrations across snapshot, windows, and routines."""
     road_pm25 = round(snapshot.current_pm25 * float(ENGINE_PARAMS["roadside_plume_multiplier"]), 1)
     wa = sanctuary_plan.window_advice
-    pm25_vals: set[float] = {
-        2.5, 60.0, 90.0, road_pm25,
+    return {
+        2.5,
+        road_pm25,
+        float(ENGINE_PARAMS["window_flush_max_outdoor_pm25"]),
+        float(ENGINE_PARAMS["window_moderate_cap_pm25"]),
         float(snapshot.current_pm25),
         float(snapshot.golden_window.mean_pm25),
         float(snapshot.golden_window.morning_peak_pm25),
@@ -173,8 +196,17 @@ def _collect_grounded_metrics(
         *(float(d.best_window_pm25) for d in snapshot.daily_outlook),
         *(v for i in routine_plan for v in (float(i.original_pm25), float(i.recommended_pm25))),
     }
-    naqi_vals: set[float] = {
-        100.0, 150.0, 200.0, 300.0, 500.0,
+
+
+def _build_naqi_allowlist(
+    snapshot: AirSnapshotResponse,
+    routine_plan: list[RoutineItemResult],
+    profile_summary: ProfileRiskSummary,
+) -> set[float]:
+    """Collect grounded CPCB NAQI thresholds and hourly/daily index values."""
+    return {
+        *(float(bp["i_hi"]) for bp in CONSTANTS["cpcb_pm25_breakpoints"]),
+        *(float(v) for v in ENGINE_PARAMS["category_warning_thresholds_naqi"].values()),
         float(snapshot.current_naqi),
         float(snapshot.golden_window.mean_naqi),
         float(profile_summary.warning_threshold_naqi),
@@ -182,6 +214,16 @@ def _collect_grounded_metrics(
         *(float(d.peak_naqi) for d in snapshot.daily_outlook),
         *(v for i in routine_plan for v in (float(i.original_naqi), float(i.recommended_naqi))),
     }
+
+
+def _build_typed_metrics(
+    snapshot: AirSnapshotResponse,
+    routine_plan: list[RoutineItemResult],
+    sanctuary_plan: SanctuaryPlan,
+    ledgers: tuple[BreatheLessLedger, EmitLessLedger, ProfileRiskSummary],
+) -> GroundedMetrics:
+    """Assemble category-scoped grounded allowlists derived from outputs and constants."""
+    breathe_less, emit_less, profile_summary = ledgers
     dose_vals: set[float] = {
         float(CONSTANTS["berkeley_earth_cig_ug"]),
         float(breathe_less.baseline_dose_ug),
@@ -194,13 +236,16 @@ def _collect_grounded_metrics(
         ),
     }
     pct_vals = sorted(
-        {float(snapshot.golden_window.reduction_pct), float(breathe_less.reduction_pct)}
+        {
+            float(ENGINE_PARAMS["golden_window_min_reduction_pct"]),
+            float(snapshot.golden_window.reduction_pct),
+            float(breathe_less.reduction_pct),
+        }
         | {float(day.reduction_pct) for day in snapshot.daily_outlook}
     )
-
-    metrics = GroundedMetrics(
-        pm25=sorted(pm25_vals),
-        naqi=sorted(naqi_vals),
+    return GroundedMetrics(
+        pm25=sorted(_build_pm25_allowlist(snapshot, routine_plan, sanctuary_plan)),
+        naqi=sorted(_build_naqi_allowlist(snapshot, routine_plan, profile_summary)),
         dose_ug=sorted(dose_vals),
         cigarettes=[float(breathe_less.cigarettes_avoided)],
         co2_g=[float(emit_less.co2_saved_g)],
@@ -208,8 +253,23 @@ def _collect_grounded_metrics(
         tailpipe_mg=[float(emit_less.tailpipe_pm25_saved_mg)],
         pct=pct_vals,
     )
+
+
+def _build_flat_allowlist(
+    snapshot: AirSnapshotResponse,
+    routine_plan: list[RoutineItemResult],
+    sanctuary_plan: SanctuaryPlan,
+    metrics: GroundedMetrics,
+    ledgers: tuple[EmitLessLedger, ProfileRiskSummary],
+) -> list[float]:
+    """Assemble flattened grounded float allowlist for post-generation validation."""
+    emit_less, profile_summary = ledgers
+    wa = sanctuary_plan.window_advice
     flat: set[float] = {
-        0.0, 2.0, 10.0, 13.0, 15.0, 20.0, 95.0, 500.0, 2200.0,
+        *_DOMAIN_REFERENCE_VALUES,
+        *(float(v) for v in CONSTANTS["budget_tier_limits_inr"].values()),
+        *(float(v) for v in ENGINE_PARAMS["mask_thresholds_pm25"].values()),
+        float(ENGINE_PARAMS["cooking_spike_pm25_ug_m3"]),
         float(snapshot.current_hour),
         float(snapshot.morning_inversion_ceiling_m),
         float(snapshot.golden_window.start_hour),
@@ -217,8 +277,14 @@ def _collect_grounded_metrics(
         float(wa.duration_minutes),
         float(emit_less.commute_km),
         float(profile_summary.peak_ventilation_m3_hr),
-        *pm25_vals, *naqi_vals, *dose_vals, *pct_vals,
-        *metrics.cigarettes, *metrics.co2_g, *metrics.co2_kg, *metrics.tailpipe_mg,
+        *metrics.pm25,
+        *metrics.naqi,
+        *metrics.dose_ug,
+        *metrics.pct,
+        *metrics.cigarettes,
+        *metrics.co2_g,
+        *metrics.co2_kg,
+        *metrics.tailpipe_mg,
         *(float(v) for pt in snapshot.hourly for v in (pt.hour, pt.pm10, pt.boundary_layer_height)),
         *(float(rm.score) for rm in sanctuary_plan.room_scores),
         *(
@@ -227,7 +293,48 @@ def _collect_grounded_metrics(
             for v in (i.original_hour, i.recommended_hour, i.duration_min)
         ),
     }
-    return metrics, sorted(flat)
+    return sorted(flat)
+
+
+def _collect_grounded_metrics(
+    snapshot: AirSnapshotResponse,
+    routine_plan: list[RoutineItemResult],
+    sanctuary_plan: SanctuaryPlan,
+    ledgers: tuple[BreatheLessLedger, EmitLessLedger, ProfileRiskSummary],
+) -> tuple[GroundedMetrics, list[float]]:
+    """Build category-scoped and global numeric allowlists before EvidenceBundle creation."""
+    metrics = _build_typed_metrics(snapshot, routine_plan, sanctuary_plan, ledgers)
+    flat = _build_flat_allowlist(
+        snapshot, routine_plan, sanctuary_plan, metrics, (ledgers[1], ledgers[2])
+    )
+    return metrics, flat
+
+
+def _build_breathe_less_ledger(
+    base_dose: float, opt_dose: float, dose_subs: list[str]
+) -> BreatheLessLedger:
+    """Construct Ledger 1 (USEPA inhaled dose savings & cigarette equivalent)."""
+    cig_ug = float(CONSTANTS["berkeley_earth_cig_ug"])
+    dose_avoided = round(base_dose - opt_dose, 2)
+    reduction_pct = round((dose_avoided / base_dose) * 100.0, 1) if base_dose > 0 else 0.0
+    cigs_avoided = round(dose_avoided / cig_ug, 2)
+    return BreatheLessLedger(
+        baseline_dose_ug=base_dose,
+        optimized_dose_ug=opt_dose,
+        dose_avoided_ug=dose_avoided,
+        reduction_pct=reduction_pct,
+        cigarettes_avoided=cigs_avoided,
+        label="Modeled Estimate",
+        formula_summary=(
+            f"D (ug) = sum_h (C_h * kappa * V_E * dt_h) * (1 - eta); "
+            f"Cigarettes = Delta D / {int(cig_ug)} ug"
+        ),
+        substitutions=dose_subs,
+        limitations=(
+            "Modeled exposure proxy integrating gridded Open-Meteo outdoor PM2.5, USEPA breathing "
+            "rates, and lab filtration/microenvironment factors—not a personal monitor reading."
+        ),
+    )
 
 
 def build_evidence_bundle(
@@ -239,38 +346,17 @@ def build_evidence_bundle(
 ) -> EvidenceBundle:
     """Assemble the complete immutable deterministic EvidenceBundle for PRANA-AI."""
     snapshot = build_air_snapshot(raw_payload, current_hour=current_hour)
-    next_day_pm25 = _extract_next_day_pm25(raw_payload)
-    routine_plan, base_dose, opt_dose, dose_subs = _schedule_activities(
-        req, snapshot, next_day_pm25=next_day_pm25
+    next_day_pm25, next_day_naqi = extract_next_day_series(raw_payload)
+    routine_plan, base_dose, opt_dose, dose_subs = schedule_activities(
+        req, snapshot, next_day_pm25=next_day_pm25, next_day_naqi=next_day_naqi
     )
-    dose_avoided = round(base_dose - opt_dose, 2)
-    reduction_pct = round((dose_avoided / base_dose) * 100.0, 1) if base_dose > 0 else 0.0
-    cigs_avoided = round(dose_avoided / float(CONSTANTS["berkeley_earth_cig_ug"]), 2)
-
-    breathe_less = BreatheLessLedger(
-        baseline_dose_ug=base_dose,
-        optimized_dose_ug=opt_dose,
-        dose_avoided_ug=dose_avoided,
-        reduction_pct=reduction_pct,
-        cigarettes_avoided=cigs_avoided,
-        label="Modeled Estimate",
-        formula_summary=(
-            "D (ug) = sum_h (C_h * kappa * V_E * dt_h) * (1 - eta); Cigarettes = Delta D / 330 ug"
-        ),
-        substitutions=dose_subs,
-        limitations=(
-            "Modeled exposure proxy integrating gridded Open-Meteo outdoor PM2.5, USEPA breathing "
-            "rates, and lab filtration/microenvironment factors—not a personal monitor reading."
-        ),
-    )
-
+    breathe_less = _build_breathe_less_ledger(base_dose, opt_dose, dose_subs)
     sanctuary_plan = score_sanctuary(req, snapshot)
     emit_less = compute_emit_less(req)
     profile_summary = build_profile_risk_summary(req, snapshot, breathe_less, emit_less)
     metrics, grounded_list = _collect_grounded_metrics(
-        snapshot, routine_plan, sanctuary_plan, breathe_less, emit_less, profile_summary
+        snapshot, routine_plan, sanctuary_plan, (breathe_less, emit_less, profile_summary)
     )
-
     return EvidenceBundle(
         app_name="PRANA-AI",
         city=snapshot.city,

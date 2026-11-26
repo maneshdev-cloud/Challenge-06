@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import explainer
-from data_fetcher import PRESETS, _build_replay_payload
+from data_fetcher import PRESETS, build_replay_payload
 from engine import build_evidence_bundle
 from schemas import PlanRequest
 
@@ -14,7 +14,7 @@ def _sample_bundle(simulate_stale: bool = False):
     """Build a reusable EvidenceBundle fixture for explainer tests."""
     delhi_preset = next(p for p in PRESETS if p["id"] == "delhi_family")
     req = PlanRequest(**delhi_preset, simulate_stale=simulate_stale)
-    raw = _build_replay_payload("delhi", "test")
+    raw = build_replay_payload("delhi", "test")
     if not simulate_stale:
         raw["provenance"]["is_stale"] = False
         raw["provenance"]["is_fallback_replay"] = False
@@ -258,3 +258,61 @@ def test_room_audit_deterministic_tips_localized_and_cost_capped() -> None:
     assert any(t.title == "Seal Window Gap" for t in parsed.tips)
     assert len(parsed.tips) == 3
     assert all("snake plant" not in t.title.lower() for t in parsed.tips)
+
+
+def test_error_classification_blank_skip_room_bounds_and_chat_routing(monkeypatch) -> None:
+    """Verify status-code failover, blank skip, range caps, houseplant summary, and routing."""
+    from gemini_client import classify_gemini_error
+
+    class _CodeErr(Exception):
+        def __init__(self, code: int, msg: str):
+            super().__init__(msg)
+            self.code = code
+
+    assert classify_gemini_error(_CodeErr(400, "quota message inside 400 error")) == "key_invalid"
+    assert classify_gemini_error(_CodeErr(401, "404 string noise")) == "key_invalid"
+    assert classify_gemini_error(_CodeErr(502, "bad gateway")) == "503_unavailable"
+    assert classify_gemini_error(TimeoutError("network")) == "504_timeout"
+
+    # Empty LLM response on a stale bundle must fall back cleanly instead of bare disclosure note
+    stale_bundle = _sample_bundle(simulate_stale=True)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-empty-key")
+    monkeypatch.setattr(explainer, "_call_gemini_sync", lambda *_: "   ")
+    txt, src, ok = asyncio.run(explainer.generate_plan_narrative(stale_bundle, skip_llm=False))
+    assert src == "deterministic_template"
+    assert ok is True
+    assert "Do This:" in txt or "यह करें:" in txt
+
+    # Rs. 100 to Rs. 2000 range and spider plant summary must be filtered/rejected cleanly
+    range_and_summary = (
+        '{"room_summary": "Add a spider plant near the bed.", "tips": ['
+        '{"title": "Purifier", "cost_inr": "Rs. 100 to Rs. 2000", '
+        '"action": "x", "why_it_helps": "y"}]}'
+    )
+    assert explainer._parse_room_audit_json(range_and_summary, "m", "Delhi", "en", None) is None
+
+    bad_range = (
+        '{"room_summary": "Leaky road-facing sill.", "tips": ['
+        '{"title": "Expensive range", "cost_inr": "Rs. 100 to Rs. 2000", '
+        '"action": "Buy unit.", "why_it_helps": "Costly."}, '
+        '{"title": "Seal Gap", "cost_inr": "Rs. 120", '
+        '"action": "Add EPDM tape.", "why_it_helps": "Cuts infiltration."}]}'
+    )
+    parsed = explainer._parse_room_audit_json(bad_range, "m", "Delhi", "en", None)
+    assert parsed is not None
+    assert all(t.title != "Expensive range" for t in parsed.tips)
+
+    # Chat word boundaries, greeting ordering ("hi mask"), and partial fallback disclosure
+    mask_reply = explainer.build_deterministic_chat_reply("hi mask", stale_bundle, "en")
+    assert "N95" in mask_reply
+    bathroom_reply = explainer.build_deterministic_chat_reply("bathroom odor", stale_bundle, "en")
+    assert "window" not in bathroom_reply.lower() or "Today's Air:" in bathroom_reply
+    partial_bundle = _sample_bundle(simulate_stale=False).model_copy(
+        update={
+            "provenance": _sample_bundle(simulate_stale=False).provenance.model_copy(
+                update={"is_partial_fallback": True}
+            )
+        }
+    )
+    partial_chat = explainer.build_deterministic_chat_reply("Can dad walk?", partial_bundle, "en")
+    assert "partial" in partial_chat.lower() or "fallback" in partial_chat.lower()
