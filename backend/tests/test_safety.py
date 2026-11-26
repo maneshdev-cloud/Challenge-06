@@ -279,6 +279,9 @@ def test_strict_grounding_unanchored_numbers_indic_claims_and_ttl(
         "Live data unavailable (historical replay). You could have bronchitis.",
         "Live data unavailable (historical replay). Consider using an inhaler.",
         "Live data unavailable (historical replay). Try taking a steroid tablet.",
+        "Live data unavailable (historical replay). It could be bronchitis.",
+        "Live data unavailable (historical replay). This could be asthma.",
+        "Live data unavailable (historical replay). It might be an asthma attack.",
         "Live data unavailable (historical replay). "
         "Increase the number of puffs you take every day.",
         "Live data unavailable (historical replay). Use your salbutamol inhaler twice daily.",
