@@ -42,11 +42,6 @@ PRANA-AI enforces a strict **Neuro-Symbolic architecture**:
 | :---: | :---: | :---: |
 | ![PRANA-AI Hero Dashboard and 24h Smog Curve](docs/screenshots/01-hero-and-plan.png) | ![PRANA-AI Medical Triage Banner and Chat](docs/screenshots/02-er-triage-and-chat.png) | ![PRANA-AI Stale Data Replay and Room IAQ Audit](docs/screenshots/03-stale-toggle-and-room-audit.png) |
 
-<p align="center">
-  <strong>Mobile View (390px) — Symmetrical 2×3 Persona Grid &amp; Compact Hero Card</strong><br/>
-  <img src="docs/screenshots/04-mobile-responsive.png" width="280" alt="PRANA-AI Mobile Responsive Layout with Symmetrical 2x3 Persona Grid and Compact Hero Card" />
-</p>
-
 ---
 
 ## Architecture Overview
