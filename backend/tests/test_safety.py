@@ -275,6 +275,10 @@ def test_strict_grounding_unanchored_numbers_indic_claims_and_ttl(
         "Live data unavailable (historical replay). कमरे में मनी प्लांट रखें।",
         "Live data unavailable (historical replay). வெளியே செல்ல பாதுகாப்பானது.",
         "Live data unavailable (historical replay). Take 2 puffs of your steroid inhaler.",
+        "Live data unavailable (historical replay). You might have asthma.",
+        "Live data unavailable (historical replay). You could have bronchitis.",
+        "Live data unavailable (historical replay). Consider using an inhaler.",
+        "Live data unavailable (historical replay). Try taking a steroid tablet.",
         "Live data unavailable (historical replay). "
         "Increase the number of puffs you take every day.",
         "Live data unavailable (historical replay). Use your salbutamol inhaler twice daily.",
